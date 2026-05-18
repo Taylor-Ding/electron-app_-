@@ -1,7 +1,7 @@
 {
   "name": "api_post_solo",
   "private": true,
-  "version": "1.0.28",
+  "version": "1.0.29",
   "main": "main.js",
   "type": "module",
   "description": "api_post_solo - 数据一致性自动化核对工具",
