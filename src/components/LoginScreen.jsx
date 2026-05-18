@@ -30,22 +30,11 @@ function LoginScreen({
   return (
     <div className="login-shell">
       <div className="login-card">
-        <div className="login-hero">
-          <div className="login-brand">
-            <div className="login-logo">⇌</div>
-            <div>
-              <div className="login-title">自动化数据断言</div>
-              <div className="login-subtitle">轻量、安静、聚焦地进入你的数据核对工作台</div>
-            </div>
-          </div>
-          <div className="login-hero-panel">
-            <span className="login-hero-kicker">Desktop Console</span>
-            <p className="login-hero-text">登录后继续使用请求发包、表配置、日志回放与结果差异查看。</p>
-            <div className="login-hero-tags">
-              <span>本地优先</span>
-              <span>快速反馈</span>
-              <span>低干扰界面</span>
-            </div>
+        <div className="login-brand">
+          <div className="login-logo">⇌</div>
+          <div>
+            <div className="login-title">自动化数据断言</div>
+            <div className="login-subtitle">轻量、安静、聚焦地进入你的数据核对工作台</div>
           </div>
         </div>
 
@@ -140,15 +129,7 @@ function LoginScreen({
           </button>
         </form>
 
-        <div className="login-hint">
-          登录请求将发送至：<code>{`${(authApiBaseUrl || '').replace(/\/$/, '')}/login`}</code>
-          <br />
-          {captchaEnabled ? (
-            <>验证码来自：<code>{`${(authApiBaseUrl || '').replace(/\/$/, '')}/captchaImage`}</code></>
-          ) : (
-            <>当前后端已关闭验证码（captchaEnabled=false）</>
-          )}
-        </div>
+
       </div>
     </div>
   );

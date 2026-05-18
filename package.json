@@ -1,12 +1,12 @@
 {
   "name": "api_post_solo",
   "private": true,
-  "version": "1.0.29",
+  "version": "1.0.30",
   "main": "main.js",
   "type": "module",
   "description": "api_post_solo - 数据一致性自动化核对工具",
-  "author": "Taylor Ding <taylor.ding@example.com>",
-  "homepage": "https://github.com/Taylor-Ding/electron-app",
+  "author": "Taylor",
+  "homepage": "https://github.com/Taylor-Ding/electron-app_-",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 4173 --strictPort",
     "build": "vite build",
