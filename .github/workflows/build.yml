@@ -41,7 +41,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release: false
-          args: "--linux x64 --publish=never"
+          args: "--linux --publish=never"
           skip_build_deps_install: true
 
       - name: Upload installer artifacts
