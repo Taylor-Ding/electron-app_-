@@ -36,7 +36,26 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build Electron app
+      - name: Build Electron app (macOS)
+        if: runner.os == 'macOS'
+        uses: samuelmeuli/action-electron-builder@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          release: false
+          args: "--mac --publish=never"
+          skip_build_deps_install: true
+
+      - name: Build Electron app (Windows)
+        if: runner.os == 'Windows'
+        uses: samuelmeuli/action-electron-builder@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          release: false
+          args: "--windows --publish=never"
+          skip_build_deps_install: true
+
+      - name: Build Electron app (Linux)
+        if: runner.os == 'Linux'
         uses: samuelmeuli/action-electron-builder@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
