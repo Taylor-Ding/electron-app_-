@@ -42,7 +42,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release: false
-          args: "--mac --publish=never"
+          args: "--publish=never"
           skip_build_deps_install: true
 
       - name: Build Electron app (Windows)
@@ -51,7 +51,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release: false
-          args: "--windows --publish=never"
+          args: "--publish=never"
           skip_build_deps_install: true
 
       - name: Build Electron app (Linux)
@@ -60,7 +60,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release: false
-          args: "--linux --publish=never"
+          args: "--publish=never"
           skip_build_deps_install: true
 
       - name: Upload installer artifacts

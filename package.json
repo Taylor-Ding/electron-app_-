@@ -5,7 +5,7 @@
   "main": "main.js",
   "type": "module",
   "description": "api_post_solo - 数据一致性自动化核对工具",
-  "author": "Taylor",
+  "author": "Taylor <taylor@example.com>",
   "homepage": "https://github.com/Taylor-Ding/electron-app_-",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 4173 --strictPort",
