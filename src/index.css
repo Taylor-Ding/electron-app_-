@@ -1,0 +1,18 @@
+/* 基础样式重置 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #0f1115;
+  color: #f6f8fb;
+}
+
+code {
+  font-family: 'SF Mono', 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+}

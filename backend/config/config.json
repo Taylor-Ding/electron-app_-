@@ -1,0 +1,9 @@
+{
+  "api_timeout": 30,
+  "ignore_fields": [
+    "update_time",
+    "version",
+    "trace_id",
+    "create_time"
+  ]
+}

@@ -1,0 +1,22 @@
+<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" className="w-full h-full drop-shadow-md">
+          <rect width="120" height="120" rx="28" fill="#8B5CF6" />
+          
+          {/* Pre-state Table (Background) */}
+          <rect x="25" y="30" width="50" height="40" rx="4" fill="#C4B5FD" />
+          <line x1="30" y1="40" x2="70" y2="40" stroke="#8B5CF6" strokeWidth="3" strokeLinecap="round" />
+          <line x1="30" y1="50" x2="60" y2="50" stroke="#8B5CF6" strokeWidth="3" strokeLinecap="round" />
+          
+          {/* Post-state Table (Foreground) */}
+          <rect x="45" y="50" width="50" height="40" rx="4" fill="#FFFFFF" />
+          <line x1="50" y1="60" x2="90" y2="60" stroke="#8B5CF6" strokeWidth="3" strokeLinecap="round" />
+          <line x1="50" y1="70" x2="75" y2="70" stroke="#F43F5E" strokeWidth="3" strokeLinecap="round" />
+          <line x1="50" y1="80" x2="85" y2="80" stroke="#10B981" strokeWidth="3" strokeLinecap="round" />
+
+          {/* API Lens */}
+          <circle cx="45" cy="70" r="14" fill="none" stroke="#F43F5E" strokeWidth="4" />
+          <line x1="35" y1="80" x2="25" y2="90" stroke="#F43F5E" strokeWidth="5" strokeLinecap="round" />
+          
+          {/* Minus/Plus in lens */}
+          <line x1="40" y1="70" x2="50" y2="70" stroke="#F43F5E" strokeWidth="2" strokeLinecap="round" />
+          <line x1="45" y1="65" x2="45" y2="75" stroke="#F43F5E" strokeWidth="2" strokeLinecap="round" />
+        </svg>
