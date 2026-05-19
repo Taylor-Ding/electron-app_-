@@ -2420,7 +2420,7 @@ function App() {
           <div className="header-title-block">
             <span className="header-eyebrow">Data Assertion Console</span>
             <div className="logo">
-              <span className="logo-icon">⇌</span>
+              <img className="logo-icon" src="/icons/logo.png" alt="logo" />
               <span className="logo-text">自动化交易数据断言</span>
               <span className="header-badge">像检查时间轴一样查看请求前后数据的真实变化</span>
             </div>
@@ -3980,9 +3980,9 @@ function App() {
             </div>
             <div className="modal-body about-body">
               <div className="about-hero">
-                <div className="about-logo">⇌</div>
+                <img className="about-logo" src="/icons/logo.png" alt="logo" />
                 <h2>自动化交易数据断言</h2>
-                <div className="about-version">版本: v1.0.30</div>
+                <div className="about-version">版本: v1.0.31</div>
                 <div className="about-author">By <span>Taylor Zhu</span></div>
               </div>
               <div className="about-desc">

@@ -225,9 +225,9 @@ body::after {
 }
 
 .logo-icon {
-  font-size: 22px;
-  color: var(--accent);
-  font-weight: 700;
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
 }
 
 .logo-text {
@@ -1645,6 +1645,7 @@ body::after {
   font-size: 24px;
   font-weight: 700;
   box-shadow: 0 18px 30px rgba(202, 83, 96, 0.24);
+  object-fit: contain;
 }
 
 .login-title {
@@ -2314,7 +2315,7 @@ body::after {
 .about-modal { max-width: 850px; }
 .about-body { padding: 30px; font-family: 'Inter', system-ui, sans-serif; }
 .about-hero { text-align: center; margin-bottom: 30px; }
-.about-logo { font-size: 48px; color: var(--primary-color); font-weight: 800; line-height: 1; margin-bottom: 10px; }
+.about-logo { width: 80px; height: 80px; object-fit: contain; margin-bottom: 10px; }
 .about-hero h2 { margin: 0; font-size: 24px; color: var(--text-color); font-weight: 600; }
 .about-version { display: inline-block; background: var(--primary-light); color: var(--primary-color); padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; margin-top: 10px; }
 .about-author { font-size: 14px; color: var(--text-secondary); margin-top: 10px; }
@@ -2554,12 +2555,13 @@ body::after {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   background: linear-gradient(135deg, rgba(139, 211, 255, 0.18), rgba(147, 219, 197, 0.14));
   color: var(--accent);
   font-size: 15px;
+  object-fit: contain;
 }
 
 .logo-text {
@@ -3181,6 +3183,7 @@ body::after {
   background: linear-gradient(160deg, #87d5ff 0%, #79c4ff 52%, #95dcc8 100%);
   box-shadow: 0 16px 36px rgba(121, 196, 255, 0.24);
   color: #06111a;
+  object-fit: contain;
 }
 
 .login-title {

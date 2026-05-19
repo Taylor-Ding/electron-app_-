@@ -31,7 +31,7 @@ function LoginScreen({
     <div className="login-shell">
       <div className="login-card">
         <div className="login-brand">
-          <div className="login-logo">⇌</div>
+          <img className="login-logo" src="/icons/logo.png" alt="logo" />
           <div>
             <div className="login-title">自动化数据断言</div>
             <div className="login-subtitle">轻量、安静、聚焦地进入你的数据核对工作台</div>
@@ -125,7 +125,7 @@ function LoginScreen({
           )}
 
           <button className="btn-primary login-submit" type="submit" disabled={isAuthenticating}>
-            {isAuthenticating ? '登录中...' : '进入工作台'}
+            {isAuthenticating ? '登录中...' : '登录'}
           </button>
         </form>
 
