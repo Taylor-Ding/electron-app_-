@@ -137,6 +137,9 @@ function App() {
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const [defaultTableSearchQuery, setDefaultTableSearchQuery] = useState('');
   const [defaultTableSettings, setDefaultTableSettings] = useState({ tables: {} });
+  // 弹窗草稿：打开时复制当前配置，点「保存设置」才写入真实 state
+  const [draftSystemSettings, setDraftSystemSettings] = useState(null);
+  const [draftDefaultTableSettings, setDraftDefaultTableSettings] = useState(null);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [showJmxPicker, setShowJmxPicker] = useState(false);
   const [jmxRequests, setJmxRequests] = useState([]);
@@ -566,6 +569,7 @@ function App() {
     const mergedTables = { ...defaultTableSettings.tables, ...systemSettings.tables };
     const config = mergedTables[tableName];
     if (!config) {
+      // 未配置表规则 → 跳过该表，继续处理其他表
       addLog(`警告: 表 ${tableName} 没有配置查询条件，也没有默认配置`, 'WARN');
       return {};
     }
@@ -718,9 +722,44 @@ function App() {
         addLog('验证请求报文格式...');
         requestData = JSON.parse(requestBody);
         addLog('请求报文格式验证通过');
-      } catch {
-        addLog('请求报文格式错误', 'ERROR');
-        throw new Error('请求报文格式错误，请检查JSON格式');
+        // ---- 校验非 txHeader 部分不能含有 {{变量}} 占位符 ----
+        const PLACEHOLDER_RE = /\{\{[^}]+\}\}/g;
+        const checkForPlaceholders = (obj, path) => {
+          if (typeof obj === 'string') {
+            const matches = obj.match(PLACEHOLDER_RE);
+            if (matches) {
+              return matches.map(m => `${path} → ${m}`);
+            }
+            return [];
+          }
+          if (Array.isArray(obj)) {
+            return obj.flatMap((item, i) => checkForPlaceholders(item, `${path}[${i}]`));
+          }
+          if (obj && typeof obj === 'object') {
+            return Object.entries(obj).flatMap(([k, v]) => checkForPlaceholders(v, `${path}.${k}`));
+          }
+          return [];
+        };
+        // 只检查非 txHeader 的顶层键
+        const invalidPlaceholders = [];
+        for (const [topKey, topVal] of Object.entries(requestData)) {
+          if (topKey === 'txHeader') continue; // txHeader 允许有占位符（由系统自动填充）
+          const found = checkForPlaceholders(topVal, topKey);
+          invalidPlaceholders.push(...found);
+        }
+        if (invalidPlaceholders.length > 0) {
+          const detail = invalidPlaceholders.slice(0, 5).join('\n');
+          addLog(`报文校验失败：非 txHeader 区域存在未替换的变量占位符`, 'ERROR');
+          invalidPlaceholders.forEach(p => addLog(`  ✗ ${p}`, 'ERROR'));
+          throw new Error(
+            `请求报文校验失败：txBody 等非 txHeader 字段中存在 {{变量}} 占位符，请替换为实际值后重试。\n涉及字段：\n${detail}`
+          );
+        }
+        addLog('报文占位符校验通过（非 txHeader 区域无未替换变量）');
+      } catch (parseOrValidateErr) {
+        // JSON 解析失败或占位符校验失败，统一记录并中断
+        addLog(parseOrValidateErr.message || '报文校验失败', 'ERROR');
+        throw parseOrValidateErr;
       }
 
       // ---- 辅助：为报文生成并写入动态字段（时间戳、跟踪号、tenantId）----
@@ -928,12 +967,12 @@ function App() {
           const mergedTables = { ...defaultTableSettings.tables, ...systemSettings.tables };
           const config = mergedTables[tableName];
           if (!config) {
+            // 未配置表规则 → 跳过该表，继续处理其他表
             addLog(`[${tableName}] 未配置查询条件，跳过`, 'WARN');
             skippedTables.push(tableName);
             continue;
           }
           {
-            const table = { name: tableName };
             const conditions = {};
             for (const cond of config.conditionFields) {
               if (cond.source === 'table' || cond.source === 'response') {
@@ -995,11 +1034,18 @@ function App() {
 
                       if (!value || typeof value !== 'string') throw new Error(`路由响应中无法提取 ${cond.field}: ${JSON.stringify(routeResponse.data)}`);
                       addLog(`[${tableName}] ${cond.field} = ${value}  (来自路由查询)`);
-                    } catch (error) {
-                      addLog(`[${tableName}] 路由查询失败: ${error.message}`, 'ERROR');
+                    } catch (routeErr) {
+                      addLog(`[${tableName}] 路由查询失败: ${routeErr.message}`, 'ERROR');
+                      // 路由查询失败时，如果该字段是必填，向上抛出中断任务
+                      if (cond.required) {
+                        throw new Error(`[${tableName}] 必填字段 [${cond.field}] 路由查询失败，任务终止: ${routeErr.message}`);
+                      }
                     }
                   } else {
                     addLog(`[${tableName}] 无法获取介质号，跳过路由查询`, 'ERROR');
+                    if (cond.required) {
+                      throw new Error(`[${tableName}] 必填字段 [${cond.field}] 无法获取介质号，任务终止`);
+                    }
                   }
                 } else {
                   if (routingKey) {
@@ -1011,15 +1057,18 @@ function App() {
               if (value !== null && value !== undefined) {
                 conditions[cond.field] = value;
               } else if (cond.required) {
-                addLog(`[${tableName}] 必填字段 ${cond.field} 无法提取`, 'ERROR');
+                // 必填字段无法提取 → 中断任务，不继续执行
+                addLog(`[${tableName}] 必填字段 [${cond.field}] 无法提取到值，中断任务`, 'ERROR');
+                throw new Error(`[${tableName}] 必填字段 [${cond.field}] 无法提取到值，任务终止。请检查表配置中的条件路径是否正确`);
               }
             }
             tableConditions[tableName] = conditions;
             addLog(`[${tableName}] 查询条件就绪: ${JSON.stringify(conditions)}`);
           }
         } catch (condError) {
-          addLog(`[${tableName}] 条件提取失败: ${condError.message}`, 'ERROR');
-          tableConditions[tableName] = {};
+          // 向上抛出，由外层 catch 统一处理，保持在日志页不跳转
+          addLog(`条件提取阶段中断: ${condError.message}`, 'ERROR');
+          throw condError;
         }
       }
 
@@ -1453,10 +1502,12 @@ function App() {
               </thead>
               <tbody>
                 {tableFieldsToShow.map(field => {
-                  const bVal = beforeData[idx] ? beforeData[idx][field] : undefined;
+                  const hasBeforeRecord = beforeData && beforeData[idx] !== undefined;
+                  const bVal = hasBeforeRecord ? beforeData[idx][field] : undefined;
                   const aVal = afterData[idx] ? afterData[idx][field] : undefined;
                   const isIgnored = ignoreFieldsSet.has(field.toLowerCase());
-                  const isDiff = !isIgnored && bVal !== aVal;
+                  const isDiff = !isIgnored && hasBeforeRecord && bVal !== aVal;
+                  const isNewDataOnly = !hasBeforeRecord && aVal !== undefined;
                   const fmtVal = (v) => v === undefined
                     ? <span style={{ opacity: 0.35 }}>—</span>
                     : v === null
@@ -1480,7 +1531,7 @@ function App() {
                             boxShadow: '0 0 8px rgba(255,64,64,0.55)',
                           }}>DIFF</span>
                         )}
-                        {isIgnored && bVal !== aVal && (
+                        {isIgnored && hasBeforeRecord && bVal !== aVal && (
                           <span style={{
                             display: 'inline-block', marginRight: 7,
                             padding: '1px 6px', borderRadius: 4,
@@ -1498,17 +1549,17 @@ function App() {
                         fontWeight: isDiff ? 600 : 400,
                         color: isDiff ? '#ff7070' : 'var(--text-secondary)',
                         textDecoration: isDiff ? 'line-through' : 'none',
-                        opacity: (isIgnored && bVal !== aVal) ? 0.6 : 1
+                        opacity: (isIgnored && hasBeforeRecord && bVal !== aVal) ? 0.6 : 1
                       }}>
                         {fmtVal(bVal)}
                       </td>
-                      {/* 接口后值 — 绿色加粗 */}
+                      {/* 接口后值 — 绿色/蓝色加粗 */}
                       <td style={{
                         padding: '10px 12px', wordBreak: 'break-all',
-                        fontFamily: isDiff ? 'monospace' : 'inherit',
-                        fontWeight: isDiff ? 700 : 400,
-                        color: isDiff ? '#f5a623' : 'var(--text-secondary)',
-                        opacity: (isIgnored && bVal !== aVal) ? 0.6 : 1
+                        fontFamily: isDiff || isNewDataOnly ? 'monospace' : 'inherit',
+                        fontWeight: isDiff || isNewDataOnly ? 700 : 400,
+                        color: isDiff ? '#f5a623' : (isNewDataOnly ? '#4a90e2' : 'var(--text-secondary)'),
+                        opacity: (isIgnored && hasBeforeRecord && bVal !== aVal) ? 0.6 : 1
                       }}>
                         {isDiff && <span style={{ marginRight: 5, fontSize: 12, opacity: 0.8 }}>→</span>}
                         {fmtVal(aVal)}
@@ -1577,11 +1628,15 @@ function App() {
 
   const handleSystemSettingsClick = () => {
     setShowSettingsDropdown(false);
+    // 深拷贝当前配置到草稿，弹窗内修改只写草稿
+    setDraftSystemSettings(JSON.parse(JSON.stringify(systemSettings)));
     setShowSystemSettings(true);
   };
 
   const handleDefaultTableSettingsClick = () => {
     setShowSettingsDropdown(false);
+    // 深拷贝当前配置到草稿
+    setDraftDefaultTableSettings(JSON.parse(JSON.stringify(defaultTableSettings)));
     setShowDefaultTableSettings(true);
   };
 
@@ -1722,32 +1777,50 @@ function App() {
   };
 
   const handleSaveSystemSettings = () => {
-    if (window.electronAPI) window.electronAPI.setConfig('systemSettings', JSON.stringify(systemSettings));
+    // 将草稿提交为真实 state
+    const committed = draftSystemSettings || systemSettings;
+    setSystemSettings(committed);
+    if (window.electronAPI) window.electronAPI.setConfig('systemSettings', JSON.stringify(committed));
     if (electronAPI) {
       try {
-        electronAPI.saveTableSettings(systemSettings.tables)
+        electronAPI.saveTableSettings(committed.tables)
           .catch(e => console.warn('[renderer] save-table-settings failed:', e));
       } catch (e) {
         console.warn('[renderer] ipc not available:', e);
       }
     }
+    setDraftSystemSettings(null);
     setShowSystemSettings(false);
     addLog('系统配置保存成功');
   };
 
+  const handleCancelSystemSettings = () => {
+    setDraftSystemSettings(null);
+    setShowSystemSettings(false);
+  };
+
   const handleSaveDefaultTableSettings = () => {
-    if (window.electronAPI) window.electronAPI.setConfig('defaultTableSettings', JSON.stringify(defaultTableSettings));
+    // 将草稿提交为真实 state
+    const committed = draftDefaultTableSettings || defaultTableSettings;
+    setDefaultTableSettings(committed);
+    if (window.electronAPI) window.electronAPI.setConfig('defaultTableSettings', JSON.stringify(committed));
     if (electronAPI) {
       try {
-        const mergedTables = { ...defaultTableSettings.tables, ...systemSettings.tables };
+        const mergedTables = { ...committed.tables, ...systemSettings.tables };
         electronAPI.saveTableSettings(mergedTables)
           .catch(e => console.warn('[renderer] save-table-settings failed:', e));
       } catch (e) {
         console.warn('[renderer] ipc not available:', e);
       }
     }
+    setDraftDefaultTableSettings(null);
     setShowDefaultTableSettings(false);
     addLog('默认表配置保存成功');
+  };
+
+  const handleCancelDefaultTableSettings = () => {
+    setDraftDefaultTableSettings(null);
+    setShowDefaultTableSettings(false);
   };
 
   // ===== TOML 序列化/反序列化工具 =====
@@ -2945,7 +3018,7 @@ function App() {
               <h3>API设置</h3>
               <button 
                 className="modal-close" 
-                onClick={() => setShowApiSettings(false)}
+                onClick={handleCancelSystemSettings}
               >
                 ×
               </button>
@@ -3312,7 +3385,7 @@ function App() {
                   />
                 </div>
                 <div className="table-configs">
-                  {Object.entries(systemSettings.tables).filter(([tableName, config]) => {
+                  {Object.entries((draftSystemSettings || systemSettings).tables).filter(([tableName, config]) => {
                     if (!config || typeof config !== 'object') return false;
                     const query = tableSearchQuery.toLowerCase();
                     if (!query) return true;
@@ -3324,7 +3397,7 @@ function App() {
                         <TableNameInput
                           initialName={tableName}
                           onNameChange={(oldName, newName) => {
-                            setSystemSettings(prev => {
+                            setDraftSystemSettings(prev => {
                               const newSettings = { ...prev };
                               const existing = newSettings.tables[oldName];
                               if (existing) {
@@ -3349,7 +3422,7 @@ function App() {
                           type="text"
                           value={config.chineseName || ''}
                           onChange={(e) => {
-                            setSystemSettings(prev => ({
+                            setDraftSystemSettings(prev => ({
                               ...prev,
                               tables: {
                                 ...prev.tables,
@@ -3367,7 +3440,7 @@ function App() {
                         <button 
                           className="btn-icon btn-danger"
                           onClick={() => {
-                            setSystemSettings(prev => {
+                            setDraftSystemSettings(prev => {
                               const newSettings = { ...prev };
                               delete newSettings.tables[tableName];
                               return newSettings;
@@ -3387,7 +3460,7 @@ function App() {
                                 type="text"
                                 value={config.primaryKey || ''}
                                 onChange={(e) => {
-                                  setSystemSettings(prev => ({
+                                  setDraftSystemSettings(prev => ({
                                     ...prev,
                                     tables: {
                                       ...prev.tables,
@@ -3407,7 +3480,7 @@ function App() {
                               <select
                                 value={config.dus || 'bdus'}
                                 onChange={(e) => {
-                                  setSystemSettings(prev => ({
+                                  setDraftSystemSettings(prev => ({
                                     ...prev,
                                     tables: {
                                       ...prev.tables,
@@ -3433,7 +3506,7 @@ function App() {
                                 type="text"
                                 value={config.ignoreFields || ''}
                                 onChange={(e) => {
-                                  setSystemSettings(prev => ({
+                                  setDraftSystemSettings(prev => ({
                                     ...prev,
                                     tables: {
                                       ...prev.tables,
@@ -3462,7 +3535,7 @@ function App() {
                                     type="text"
                                     value={condition.field || ''}
                                     onChange={(e) => {
-                                      setSystemSettings(prev => {
+                                      setDraftSystemSettings(prev => {
                                         const newSettings = { ...prev };
                                         newSettings.tables[tableName].conditionFields[index].field = e.target.value;
                                         return newSettings;
@@ -3477,7 +3550,7 @@ function App() {
                                   <select
                                     value={condition.source || 'request'}
                                     onChange={(e) => {
-                                      setSystemSettings(prev => {
+                                      setDraftSystemSettings(prev => {
                                         const newSettings = { ...prev };
                                         newSettings.tables[tableName].conditionFields[index].source = e.target.value;
                                         return newSettings;
@@ -3501,7 +3574,7 @@ function App() {
                                       <select
                                         value={condition.selectedTable || ''}
                                         onChange={(e) => {
-                                          setSystemSettings(prev => {
+                                          setDraftSystemSettings(prev => {
                                             const newSettings = { ...prev };
                                             newSettings.tables[tableName].conditionFields[index].selectedTable = e.target.value;
                                             newSettings.tables[tableName].conditionFields[index].path = e.target.value ? `${e.target.value}.` : '';
@@ -3511,7 +3584,7 @@ function App() {
                                         className="input"
                                       >
                                         <option value="">请选择表</option>
-                                        {Object.keys(systemSettings.tables).filter(t => t !== tableName).map(t => (
+                                        {Object.keys((draftSystemSettings || systemSettings).tables).filter(t => t !== tableName).map(t => (
                                           <option key={t} value={t}>{t}</option>
                                         ))}
                                       </select>
@@ -3522,7 +3595,7 @@ function App() {
                                         type="text"
                                         value={condition.path ? condition.path.split('.')[1] || '' : ''}
                                         onChange={(e) => {
-                                          setSystemSettings(prev => {
+                                          setDraftSystemSettings(prev => {
                                             const newSettings = { ...prev };
                                             if (condition.selectedTable) {
                                               newSettings.tables[tableName].conditionFields[index].path = `${condition.selectedTable}.${e.target.value}`;
@@ -3544,7 +3617,7 @@ function App() {
                                       type="text"
                                       value={condition.customValue || ''}
                                       onChange={(e) => {
-                                        setSystemSettings(prev => {
+                                        setDraftSystemSettings(prev => {
                                           const newSettings = { ...prev };
                                           newSettings.tables[tableName].conditionFields[index].customValue = e.target.value;
                                           return newSettings;
@@ -3563,7 +3636,7 @@ function App() {
                                       type="text"
                                       value={condition.path || ''}
                                       onChange={(e) => {
-                                        setSystemSettings(prev => {
+                                        setDraftSystemSettings(prev => {
                                           const newSettings = { ...prev };
                                           newSettings.tables[tableName].conditionFields[index].path = e.target.value;
                                           return newSettings;
@@ -3582,7 +3655,7 @@ function App() {
                                     type="checkbox"
                                     checked={condition.required || false}
                                     onChange={(e) => {
-                                      setSystemSettings(prev => {
+                                      setDraftSystemSettings(prev => {
                                         const newSettings = { ...prev };
                                         newSettings.tables[tableName].conditionFields[index].required = e.target.checked;
                                         return newSettings;
@@ -3593,7 +3666,7 @@ function App() {
                                 <button 
                                   className="btn-icon btn-danger"
                                   onClick={() => {
-                                    setSystemSettings(prev => {
+                                    setDraftSystemSettings(prev => {
                                       const newSettings = { ...prev };
                                       newSettings.tables[tableName].conditionFields = newSettings.tables[tableName].conditionFields.filter((_, i) => i !== index);
                                       return newSettings;
@@ -3609,7 +3682,7 @@ function App() {
                           <button 
                             className="btn-icon add-condition-btn"
                             onClick={() => {
-                              setSystemSettings(prev => {
+                              setDraftSystemSettings(prev => {
                                 const newSettings = { ...prev };
                                 newSettings.tables[tableName].conditionFields.push({
                                   field: '',
@@ -3632,7 +3705,7 @@ function App() {
                     className="btn-icon add-table-btn"
                     onClick={() => {
                       const newTableName = `new_table_${Date.now()}`;
-                      setSystemSettings(prev => ({
+                      setDraftSystemSettings(prev => ({
                         ...prev,
                         tables: {
                           ...prev.tables,
@@ -3671,7 +3744,7 @@ function App() {
               <div className="modal-footer-right">
                 <button 
                   className="btn-secondary" 
-                  onClick={() => setShowSystemSettings(false)}
+                  onClick={handleCancelSystemSettings}
                 >
                   取消
                 </button>
@@ -3700,7 +3773,7 @@ function App() {
               </div>
               <button 
                 className="modal-close" 
-                onClick={() => setShowDefaultTableSettings(false)}
+                onClick={handleCancelDefaultTableSettings}
               >
                 ×
               </button>
@@ -3719,7 +3792,7 @@ function App() {
                   />
                 </div>
                 <div className="table-configs">
-                  {Object.entries(defaultTableSettings.tables).filter(([tableName, config]) => {
+                  {Object.entries((draftDefaultTableSettings || defaultTableSettings).tables).filter(([tableName, config]) => {
                     if (!config || typeof config !== 'object') return false;
                     const query = defaultTableSearchQuery.toLowerCase();
                     if (!query) return true;
@@ -4078,7 +4151,7 @@ function App() {
               <div className="modal-footer-right">
                 <button 
                   className="btn-secondary" 
-                  onClick={() => setShowDefaultTableSettings(false)}
+                  onClick={handleCancelDefaultTableSettings}
                 >
                   取消
                 </button>
@@ -4185,7 +4258,7 @@ function App() {
               <div className="about-hero">
                 <img className="about-logo" src="/icons/logo.png" alt="logo" />
                 <h2>自动化交易数据断言</h2>
-                <div className="about-version">版本: v1.0.31</div>
+                <div className="about-version">版本: v1.0.32</div>
                 <div className="about-author">By <span>Taylor Zhu</span></div>
               </div>
               <div className="about-desc">
