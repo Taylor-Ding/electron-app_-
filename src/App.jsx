@@ -55,13 +55,13 @@ function App() {
   });
   const [loginError, setLoginError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
-  const [authApiBaseUrl, setAuthApiBaseUrl] = useState('http://localhost:8080');
+  const [authApiBaseUrl, setAuthApiBaseUrl] = useState('http://20.12.12.121:8082/api/');
   const [captchaSrc, setCaptchaSrc] = useState('');
   const [captchaUuid, setCaptchaUuid] = useState('');
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [captchaEnabled, setCaptchaEnabled] = useState(true);
   const [loginCaptchaCode, setLoginCaptchaCode] = useState('');
-  const [apiUrl, setApiUrl] = useState('http://localhost:8080/online-service');
+  const [apiUrl, setApiUrl] = useState('http://20.12.12.20:8080/online-service');
   const [requestBody, setRequestBody] = useState(JSON.stringify({
     "txBody": {
       "txEntity": {
@@ -123,6 +123,10 @@ function App() {
   const [selectedEnvironment, setSelectedEnvironment] = useState('DEV1');
   const [showDataModal, setShowDataModal] = useState(false);
   const [dataModalContent, setDataModalContent] = useState({ title: '', beforeSql: '', afterSql: '', beforeData: [], afterData: [] });
+  const [dataModalSearchQuery, setDataModalSearchQuery] = useState('');
+  const [selectedFields, setSelectedFields] = useState([]);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [expandedRecords, setExpandedRecords] = useState({});
   const [showEnvironmentDropdown, setShowEnvironmentDropdown] = useState(false);
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [showApiSettings, setShowApiSettings] = useState(false);
@@ -147,30 +151,30 @@ function App() {
   
   // API设置 - 不同环境的请求地址配置
   const [apiSettings, setApiSettings] = useState({
-    route_url: 'http://route-server.example.com/testtool/routeQuery', // 路由服务器地址，不受环境变化影响
+    route_url: 'http://20.12.12.121:8082/api/testtool/routeQuery', // 路由服务器地址，不受环境变化影响
     T1: {
-      request_url: 'http://t1-api.example.com/api/business',
-      mac_url: 'http://t1-api.example.com/api/mac'
+      request_url: 'http://20.201.19.12:8080/online-service',
+      mac_url: 'http://20.201.21.125:8083/mac/requestGenMac'
     },
     T2: {
-      request_url: 'http://t2-api.example.com/api/business',
-      mac_url: 'http://t2-api.example.com/api/mac'
+      request_url: 'http://20.204.34.59:8080/online-service',
+      mac_url: 'http://20.12.10.119:8083/mac/requestGenMac'
     },
     SITA: {
-      request_url: 'http://sita-api.example.com/api/business',
-      mac_url: 'http://sita-api.example.com/api/mac'
+      request_url: 'http://20.200.84.169:8080/online-service',
+      mac_url: 'http://20.12.10.86:8083/mac/requestGenMac'
     },
     DEV1: {
       request_url: 'http://localhost:8080/online-service',
       mac_url: 'http://localhost:8080/mac/requestGenMac'
     },
     TEST: {
-      request_url: 'http://test-api.example.com/api/business',
-      mac_url: 'http://test-api.example.com/api/mac'
+      request_url: 'http://20.12.12.146:8080/online-service',
+      mac_url: ''
     },
     DEVS: {
-      request_url: 'http://devs-api.example.com/api/business',
-      mac_url: 'http://devs-api.example.com/api/mac'
+      request_url: 'http://20.12.11.202:8080/online-service',
+      mac_url: ''
     }
   });
 
@@ -179,13 +183,7 @@ function App() {
     T1: [],
     T2: [],
     SITA: [],
-    DEV1: [{
-      host: 'localhost',
-      port: 5432,
-      database: 'postgres',
-      user: 'postgres',
-      password: 'postgres'
-    }],
+    DEV1: [],
     TEST: [],
     DEVS: []
   });
@@ -513,8 +511,6 @@ function App() {
       if (!mediumNo) throw new Error('mainMapElemntInfo字段05开头但后续没有介质号');
       addLog(`解析成功: 类型=介质号, 值=${mediumNo}`);
       return { type: 'medium_no', value: mediumNo };
-    } else {
-      throw new Error(`mainMapElemntInfo字段格式错误，必须以04或05开头，当前值: ${mainMapStr}`);
     }
   };
 
@@ -1221,6 +1217,10 @@ function App() {
       beforeData: details.before?.data || [],
       afterData: details.after?.data || []
     });
+    setDataModalSearchQuery('');
+    setSelectedFields([]);
+    setIsDropdownOpen(false);
+    setExpandedRecords({});
     setShowDataModal(true);
   };
 
@@ -1234,6 +1234,8 @@ function App() {
     if (afterData[0]) Object.keys(afterData[0]).forEach(k => allKeys.add(k));
     
     const fields = Array.from(allKeys);
+    const dropdownOptions = fields.filter(field => field.toLowerCase().includes(dataModalSearchQuery.toLowerCase()));
+    const tableFieldsToShow = selectedFields.length > 0 ? fields.filter(f => selectedFields.includes(f)) : fields;
 
     // 获取当前表的忽略字段配置（解决浅拷贝可能导致的丢失，并支持中英文逗号及大小写忽略）
     const defaultTableConfig = defaultTableSettings.tables[tableName] || {};
@@ -1243,12 +1245,204 @@ function App() {
     const ignoreFieldsStr = tableConfig.ignoreFields || '';
     // 使用正则表达式兼容半角逗号和全角逗号，并统一转小写去除空格
     const ignoreFieldsSet = new Set(ignoreFieldsStr.toLowerCase().split(/[,，]/).map(f => f.trim()).filter(Boolean));
+    
+    const toggleRecord = (idx) => {
+      setExpandedRecords(prev => {
+        const isCurrentlyExpanded = prev[idx] !== false; // 初始为 undefined 时视作展开
+        return {
+        ...prev,
+        [idx]: !isCurrentlyExpanded
+        };
+      });
+    };
+
+    const toggleFieldSelection = (field) => {
+      setSelectedFields(prev => prev.includes(field) ? prev.filter(f => f !== field) : [...prev, field]);
+    };
+    
+    const removeFieldSelection = (field, e) => {
+      e.stopPropagation();
+      setSelectedFields(prev => prev.filter(f => f !== field));
+    };
 
     return (
       <div className="data-table-container" style={{ overflowX: 'auto', marginTop: '15px' }}>
-        {Array.from({ length: maxLen }).map((_, idx) => (
-          <div key={idx} style={{ marginBottom: '20px' }}>
-            {maxLen > 1 && <h4 style={{ marginBottom: '10px', color: 'var(--text-primary)' }}>记录 {idx + 1}</h4>}
+        <div style={{ marginBottom: '20px', position: 'sticky', top: '-10px', zIndex: 20, background: 'var(--bg-color)', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+          <div style={{ position: 'relative' }}>
+            <div 
+              style={{ 
+                display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px',
+                width: '100%', minHeight: '44px', padding: '6px 42px', borderRadius: '10px', 
+                border: '1px solid', borderColor: isDropdownOpen ? '#007aff' : 'var(--border-color)',
+                backgroundColor: 'var(--bg-lighter)', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                boxShadow: isDropdownOpen ? '0 0 0 4px rgba(0, 122, 255, 0.15)' : '0 2px 8px rgba(0,0,0,0.1)',
+                cursor: 'text'
+              }}
+              onClick={() => setIsDropdownOpen(true)}
+            >
+              <span style={{ position: 'absolute', left: '16px', top: '12px', color: '#888', display: 'flex', pointerEvents: 'none' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            </span>
+
+            {selectedFields.map(field => (
+                <span key={field} style={{
+                  display: 'flex', alignItems: 'center', backgroundColor: 'rgba(0, 122, 255, 0.15)', 
+                  color: '#4a90e2', padding: '4px 10px', borderRadius: '8px', fontSize: '13px', 
+                  fontWeight: '600', border: '1px solid rgba(0, 122, 255, 0.2)', userSelect: 'none'
+                }}>
+                  {field}
+                  <span 
+                    onClick={(e) => removeFieldSelection(field, e)}
+                    style={{ marginLeft: '6px', cursor: 'pointer', display: 'flex', opacity: 0.7, padding: '2px', borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.1)' }}
+                    onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
+                    onMouseLeave={(e) => e.currentTarget.style.opacity = 0.7}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </span>
+                </span>
+              ))}
+
+          <input
+            type="text"
+            placeholder={selectedFields.length === 0 ? "搜索并选择字段名称 (如: cust_no)..." : ""}
+              value={dataModalSearchQuery}
+              onChange={(e) => setDataModalSearchQuery(e.target.value)}
+            value={dataModalSearchQuery}
+            onChange={(e) => {
+                  setDataModalSearchQuery(e.target.value);
+                  setIsDropdownOpen(true);
+                }}
+                onFocus={() => setIsDropdownOpen(true)}
+            style={{ 
+                flex: 1, minWidth: '150px', border: 'none', background: 'transparent',
+                  color: 'var(--text-primary)', fontSize: '15px', outline: 'none', padding: '4px 0'
+              }}
+              />
+
+              {(selectedFields.length > 0 || dataModalSearchQuery) && (
+              <span 
+                style={{ position: 'absolute', right: '16px', top: '12px', color: '#aaa', cursor: 'pointer', padding: '4px', display: 'flex' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDataModalSearchQuery('');
+                    setSelectedFields([]);
+                  }}
+                onMouseEnter={(e) => e.currentTarget.style.color = '#fff'}
+                onMouseLeave={(e) => e.currentTarget.style.color = '#aaa'}
+                title="清除所有"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              </span>
+            )}
+            
+            </div>
+
+            {isDropdownOpen && (
+              <>
+                <div 
+                  style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 20 }}
+                  onClick={(e) => { e.stopPropagation(); setIsDropdownOpen(false); }}
+                />
+                <div style={{
+                  position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '10px', zIndex: 30,
+                  backgroundColor: isDarkMode ? 'rgba(35, 35, 35, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+                  backdropFilter: 'blur(12px) saturate(160%)',
+                  WebkitBackdropFilter: 'blur(12px) saturate(160%)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+                  maxHeight: '300px', overflowY: 'auto', padding: '8px'
+                }}>
+                  {dropdownOptions.length === 0 ? (
+                    <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '14px' }}>
+                      未找到相关字段
+                    </div>
+                  ) : (
+                    dropdownOptions.map(field => {
+                      const isSelected = selectedFields.includes(field);
+                      return (
+                        <div 
+                          key={field}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFieldSelection(field);
+                          }}
+                          onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)'; }}
+                          onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                          style={{
+                            padding: '10px 14px', borderRadius: '8px', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            backgroundColor: isSelected ? 'rgba(0, 122, 255, 0.15)' : 'transparent',
+                            color: isSelected ? '#4a90e2' : 'var(--text-primary)',
+                            fontSize: '14px', fontWeight: isSelected ? '600' : '400',
+                            transition: 'background-color 0.2s', marginBottom: '4px'
+                          }}
+                        >
+                          {field}
+                          {isSelected && (
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+              )}
+          </div>
+        </div>
+        {Array.from({ length: maxLen }).map((_, idx) => {
+          const isExpanded = expandedRecords[idx] !== false; // 默认展开
+          return (
+          <div key={idx} style={{ marginBottom: '24px' }}>
+            {maxLen > 1 && (
+              <div 
+                style={{
+                  marginBottom: '12px',
+                  padding: '12px 18px',
+                  backgroundColor: 'var(--bg-lighter)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  userSelect: 'none',
+                  transition: 'background-color 0.25s, box-shadow 0.25s',
+                }}
+                onClick={() => toggleRecord(idx)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.08)';
+                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'var(--bg-lighter)';
+                  e.currentTarget.style.boxShadow = 'none';
+                }}
+                title="点击折叠/展开"
+              >
+                <div style={{ display: 'flex', alignItems: 'center', fontWeight: '600', color: 'var(--text-primary)', fontSize: '15px' }}>
+                  <span style={{ 
+                    marginRight: '14px', 
+                    transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', 
+                    transition: 'transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)', 
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: '26px',
+                    height: '26px',
+                    borderRadius: '50%',
+                    backgroundColor: 'rgba(255,255,255,0.06)'
+                  }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                  </span>
+                  数据对比组 {idx + 1}
+                </div>
+                <span style={{ fontSize: '12px', fontWeight: '500', color: 'var(--text-secondary)', backgroundColor: 'rgba(0,0,0,0.25)', padding: '4px 10px', borderRadius: '12px' }}>
+                  {isExpanded ? '点击折叠' : '点击展开'}
+                </span>
+              </div>
+            )}
+            {isExpanded && (
             <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
               <thead>
                 <tr>
@@ -1258,7 +1452,7 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {fields.map(field => {
+                {tableFieldsToShow.map(field => {
                   const bVal = beforeData[idx] ? beforeData[idx][field] : undefined;
                   const aVal = afterData[idx] ? afterData[idx][field] : undefined;
                   const isIgnored = ignoreFieldsSet.has(field.toLowerCase());
@@ -1322,10 +1516,19 @@ function App() {
                     </tr>
                   );
                 })}
+                {tableFieldsToShow.length === 0 && (
+                  <tr>
+                    <td colSpan="3" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
+                      未找到匹配的字段
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
+            )}
           </div>
-        ))}
+        );
+        })}
       </div>
     );
   };
@@ -3940,7 +4143,7 @@ function App() {
           <div className="modal-content sql-data-modal" style={{ maxWidth: '85%', width: '1200px' }}>
             <div className="modal-header">
               <h3>{dataModalContent.title} - 数据对比明细</h3>
-              <button className="btn-close" onClick={() => setShowDataModal(false)}>×</button>
+              <button className="btn-close" onClick={() => { setShowDataModal(false); setDataModalSearchQuery(''); }}>×</button>
             </div>
             <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto', padding: '10px 20px' }}>
               <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
@@ -3964,7 +4167,7 @@ function App() {
               )}
             </div>
             <div className="modal-footer" style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end', paddingTop: '15px', borderTop: '1px solid var(--border-color)' }}>
-              <button className="btn-secondary" onClick={() => setShowDataModal(false)}>关闭</button>
+              <button className="btn-secondary" onClick={() => { setShowDataModal(false); setDataModalSearchQuery(''); }}>关闭</button>
             </div>
           </div>
         </div>
