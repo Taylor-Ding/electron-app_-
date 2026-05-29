@@ -9,7 +9,21 @@ on:
     branches: [ main, master ]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+
   build:
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -36,32 +50,8 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build Electron app (macOS)
-        if: runner.os == 'macOS'
-        uses: samuelmeuli/action-electron-builder@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          release: false
-          args: "--publish=never"
-          skip_build_deps_install: true
-
-      - name: Build Electron app (Windows)
-        if: runner.os == 'Windows'
-        uses: samuelmeuli/action-electron-builder@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          release: false
-          args: "--publish=never"
-          skip_build_deps_install: true
-
-      - name: Build Electron app (Linux)
-        if: runner.os == 'Linux'
-        uses: samuelmeuli/action-electron-builder@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          release: false
-          args: "--publish=never"
-          skip_build_deps_install: true
+      - name: Build Electron app
+        run: npx electron-builder --publish=never
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4

@@ -3,40 +3,129 @@ import axios from 'axios';
 import { JSONPath } from 'jsonpath-plus';
 import './App.css';
 import LoginScreen from './components/LoginScreen.jsx';
+import { ENVIRONMENT_OPTIONS } from './config/constants.js';
+import { encryptPassword, decryptPassword } from './utils/encryption.js';
+import { serializeToToml, parseToml } from './utils/serialization.js';
+import { parseJmxFile, cleanJmxBody } from './utils/jmxParser.js';
 
-const TableNameInput = ({ initialName, onNameChange, placeholder, className, style }) => {
-  const [name, setName] = useState(initialName);
+const TableNameInput = ({ initialName, onNameChange, placeholder, className, style, defaultTables, onSelectSuggestion }) => {
+  const [name, setName] = useState(() => {
+    return initialName.startsWith('new_table_') ? '' : initialName;
+  });
+  const [showDropdown, setShowDropdown] = useState(false);
+  const containerRef = useRef(null);
   
   useEffect(() => {
-    setName(initialName);
+    setName(initialName.startsWith('new_table_') ? '' : initialName);
   }, [initialName]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
   
   const handleBlur = () => {
-    const newName = name.trim();
-    if (newName && newName !== initialName) {
-      onNameChange(initialName, newName);
-    } else {
-      setName(initialName);
-    }
+    setTimeout(() => {
+      const newName = name.trim();
+      if (newName && newName !== initialName) {
+        onNameChange(initialName, newName);
+      } else {
+        setName(initialName);
+      }
+    }, 200);
   };
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
       e.target.blur();
+      setShowDropdown(false);
     }
   };
 
+  const isNew = initialName.startsWith('new_table_');
+  const suggestions = useMemo(() => {
+    if (!defaultTables) return [];
+    const query = name.trim().toLowerCase();
+    if (!query) return []; // 当用户没有输入任何字符（空值）时，不展示匹配的表名列表
+    return Object.keys(defaultTables).filter(tName => {
+      const chineseName = defaultTables[tName]?.chineseName || '';
+      return tName.toLowerCase().includes(query) || chineseName.toLowerCase().includes(query);
+    });
+  }, [defaultTables, name]);
+
   return (
-    <input
-      type="text"
-      value={name}
-      onChange={(e) => setName(e.target.value)}
-      onBlur={handleBlur}
-      onKeyDown={handleKeyDown}
-      className={className}
-      placeholder={placeholder}
-      style={style}
-    />
+    <div ref={containerRef} style={{ position: 'relative', flex: style?.flex || 1, display: 'flex' }}>
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => {
+          setName(e.target.value);
+          setShowDropdown(true);
+        }}
+        onFocus={() => {
+          if (isNew) setShowDropdown(true);
+        }}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        className={className}
+        placeholder={placeholder}
+        style={{ ...style, width: '100%' }}
+      />
+      {showDropdown && suggestions.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          right: 0,
+          zIndex: 9999,
+          backgroundColor: '#1e222b',
+          border: '1px solid #3e4451',
+          borderRadius: '6px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+          maxHeight: '200px',
+          overflowY: 'auto',
+          marginTop: '4px'
+        }}>
+          {suggestions.map(sName => {
+            const chinese = defaultTables[sName]?.chineseName ? ` (${defaultTables[sName].chineseName})` : '';
+            return (
+              <div
+                key={sName}
+                onMouseDown={() => {
+                  setName(sName);
+                  setShowDropdown(false);
+                  if (onSelectSuggestion) {
+                    onSelectSuggestion(initialName, sName, defaultTables[sName]);
+                  } else {
+                    onNameChange(initialName, sName);
+                  }
+                }}
+                style={{
+                  padding: '8px 12px',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  color: '#abb2bf',
+                  borderBottom: '1px solid #282c34',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => { e.target.style.backgroundColor = '#2c313c'; e.target.style.color = '#ffffff'; }}
+                onMouseLeave={(e) => { e.target.style.backgroundColor = 'transparent'; e.target.style.color = '#abb2bf'; }}
+              >
+                <strong style={{ color: '#61afef' }}>{sName}</strong>{chinese}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -127,6 +216,7 @@ function App() {
   const [selectedFields, setSelectedFields] = useState([]);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [expandedRecords, setExpandedRecords] = useState({});
+  const [assertionSelections, setAssertionSelections] = useState({});
   const [showEnvironmentDropdown, setShowEnvironmentDropdown] = useState(false);
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [showApiSettings, setShowApiSettings] = useState(false);
@@ -134,6 +224,8 @@ function App() {
   const [showSystemSettings, setShowSystemSettings] = useState(false);
   const [showDefaultTableSettings, setShowDefaultTableSettings] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
+  const [showAssertSqlModal, setShowAssertSqlModal] = useState(false);
+  const [assertSqlModalContent, setAssertSqlModalContent] = useState('');
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const [defaultTableSearchQuery, setDefaultTableSearchQuery] = useState('');
   const [defaultTableSettings, setDefaultTableSettings] = useState({ tables: {} });
@@ -149,8 +241,7 @@ function App() {
   const importFileRef = useRef(null);
   const jmxFileRef = useRef(null);
   // 用于在异步函数中访问最新 state
-  const systemDbConfigRef = useRef(null);
-  const apiSettingsRef = useRef(null);
+
   
   // API设置 - 不同环境的请求地址配置
   const [apiSettings, setApiSettings] = useState({
@@ -226,9 +317,6 @@ function App() {
   // 数据库连接测试状态
   const [testConnectionStatus, setTestConnectionStatus] = useState({});
 
-  // API 状态指示器: 'idle' | 'loading' | 'success' | 'error'
-  const [apiStatus, setApiStatus] = useState('idle');
-  const [apiStatusMsg, setApiStatusMsg] = useState('就绪');
   const currentApiConfig = apiSettings[selectedEnvironment] || {};
   const resultSummary = useMemo(() => {
     return results.reduce((summary, item) => {
@@ -270,6 +358,329 @@ function App() {
     const newTables = [...tables];
     newTables[index].name = value;
     setTables(newTables);
+  };
+
+  const moveSystemTable = (tableName, direction) => {
+    setDraftSystemSettings(prev => {
+      if (!prev || !prev.tables) return prev;
+      const keys = Object.keys(prev.tables);
+      const index = keys.indexOf(tableName);
+      if (index === -1) return prev;
+      
+      const newIndex = direction === 'up' ? index - 1 : index + 1;
+      if (newIndex < 0 || newIndex >= keys.length) return prev;
+      
+      const newKeys = [...keys];
+      newKeys[index] = keys[newIndex];
+      newKeys[newIndex] = keys[index];
+      
+      const newTables = {};
+      newKeys.forEach(k => {
+        newTables[k] = prev.tables[k];
+      });
+      
+      return {
+        ...prev,
+        tables: newTables
+      };
+    });
+  };
+
+  const insertSystemTable = (afterTableName) => {
+    const newTableName = `new_table_${Date.now()}`;
+    setDraftSystemSettings(prev => {
+      if (!prev || !prev.tables) return prev;
+      const keys = Object.keys(prev.tables);
+      const index = keys.indexOf(afterTableName);
+      
+      const newKeys = [...keys];
+      if (index === -1) {
+        newKeys.push(newTableName);
+      } else {
+        newKeys.splice(index + 1, 0, newTableName);
+      }
+      
+      const newTables = {};
+      newKeys.forEach(k => {
+        if (k === newTableName) {
+          newTables[k] = {
+            chineseName: '',
+            primaryKey: '',
+            conditionFields: []
+          };
+        } else {
+          newTables[k] = prev.tables[k];
+        }
+      });
+      
+      return {
+        ...prev,
+        tables: newTables
+      };
+    });
+  };
+
+  const moveDefaultTable = (tableName, direction) => {
+    setDraftDefaultTableSettings(prev => {
+      if (!prev || !prev.tables) return prev;
+      const keys = Object.keys(prev.tables);
+      const index = keys.indexOf(tableName);
+      if (index === -1) return prev;
+      
+      const newIndex = direction === 'up' ? index - 1 : index + 1;
+      if (newIndex < 0 || newIndex >= keys.length) return prev;
+      
+      const newKeys = [...keys];
+      newKeys[index] = keys[newIndex];
+      newKeys[newIndex] = keys[index];
+      
+      const newTables = {};
+      newKeys.forEach(k => {
+        newTables[k] = prev.tables[k];
+      });
+      
+      return {
+        ...prev,
+        tables: newTables
+      };
+    });
+  };
+
+  const insertDefaultTable = (afterTableName) => {
+    const newTableName = `new_table_${Date.now()}`;
+    setDraftDefaultTableSettings(prev => {
+      if (!prev || !prev.tables) return prev;
+      const keys = Object.keys(prev.tables);
+      const index = keys.indexOf(afterTableName);
+      
+      const newKeys = [...keys];
+      if (index === -1) {
+        newKeys.push(newTableName);
+      } else {
+        newKeys.splice(index + 1, 0, newTableName);
+      }
+      
+      const newTables = {};
+      newKeys.forEach(k => {
+        if (k === newTableName) {
+          newTables[k] = {
+            chineseName: '',
+            primaryKey: '',
+            conditionFields: []
+          };
+        } else {
+          newTables[k] = prev.tables[k];
+        }
+      });
+      
+      return {
+        ...prev,
+        tables: newTables
+      };
+    });
+  };
+
+  const isColumnChecked = (tableName, recordIdx, fieldName) => {
+    return !!assertionSelections[`${tableName}|${recordIdx}|${fieldName}`];
+  };
+
+  const toggleColumnAssertion = (tableName, recordIdx, fieldName) => {
+    setAssertionSelections(prev => {
+      const key = `${tableName}|${recordIdx}|${fieldName}`;
+      return {
+        ...prev,
+        [key]: !prev[key]
+      };
+    });
+  };
+
+  const generatePostgresAssertSql = (tableName, resultDetails, recordIdx, selectedCols) => {
+    if (!resultDetails || !selectedCols || selectedCols.length === 0) return '';
+    const afterData = resultDetails.after?.data || [];
+    const record = afterData[recordIdx];
+    if (!record) return '';
+
+    // 1. 提取物理表名
+    const afterSql = resultDetails.after?.sql || '';
+    const routedTableName = (() => {
+      if (!afterSql) return tableName;
+      const match = afterSql.match(/FROM\s+["`]?([A-Za-z0-9_]+)["`]?/i);
+      return match ? match[1] : tableName;
+    })();
+
+    // 2. 根据配置文件中的查询条件来构建 WHERE 定位子句
+    const getConditionFields = (tName) => {
+      const defaultTableConfig = defaultTableSettings.tables[tName] || {};
+      const systemTableConfig = systemSettings.tables[tName] || {};
+      const config = { ...defaultTableConfig, ...systemTableConfig };
+      if (config && config.conditionFields) {
+        return config.conditionFields.map(c => c.field).filter(Boolean);
+      }
+      return [];
+    };
+
+    let condFields = getConditionFields(tableName);
+
+    // 如果没有配置条件，则降级使用主键
+    if (condFields.length === 0) {
+      const getPrimaryKeys = (tName) => {
+        const defaultTableConfig = defaultTableSettings.tables[tName] || {};
+        const systemTableConfig = systemSettings.tables[tName] || {};
+        const primaryKeyStr = systemTableConfig.primaryKey || systemTableConfig.primary_key || 
+                              defaultTableConfig.primaryKey || defaultTableConfig.primary_key || '';
+        return primaryKeyStr.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean);
+      };
+      condFields = getPrimaryKeys(tableName);
+    }
+
+    let whereConditions = [];
+
+    // 根据确定好的条件字段从记录中提取并拼接成 WHERE 条件
+    condFields.forEach(field => {
+      const matchedKey = Object.keys(record).find(k => k.toLowerCase() === field.toLowerCase()) || field;
+      const val = record[matchedKey];
+      if (val !== undefined) {
+        if (val === null) {
+          whereConditions.push(`"${matchedKey}" IS NULL`);
+        } else if (typeof val === 'number') {
+          whereConditions.push(`"${matchedKey}" = ${val}`);
+        } else {
+          const escapedVal = String(val).replace(/'/g, "''");
+          whereConditions.push(`"${matchedKey}" = '${escapedVal}'`);
+        }
+      }
+    });
+
+    // 如果没能构建出条件，则从 SQL 的 WHERE 中提取作为兜底
+    if (whereConditions.length === 0) {
+      if (afterSql) {
+        const whereIndex = afterSql.toUpperCase().indexOf(' WHERE ');
+        if (whereIndex !== -1) {
+          const rawWhere = afterSql.substring(whereIndex + 7).trim();
+          whereConditions.push(rawWhere);
+        }
+      }
+    }
+
+    // 最后的最后兜底：拿第一个属性
+    if (whereConditions.length === 0) {
+      const firstKey = Object.keys(record)[0];
+      if (firstKey) {
+        const val = record[firstKey];
+        if (val === null) {
+          whereConditions.push(`"${firstKey}" IS NULL`);
+        } else if (typeof val === 'number') {
+          whereConditions.push(`"${firstKey}" = ${val}`);
+        } else {
+          whereConditions.push(`"${firstKey}" = '${String(val).replace(/'/g, "''")}'`);
+        }
+      }
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // 3. 生成断言 SQL（选择勾选字段 + expected 注释）
+    const selectedColsList = selectedCols.map(c => `"${c}"`).join(', ');
+    const expectedLines = selectedCols.map(col => {
+      const val = record[col];
+      if (val === null) return `-- expected: ${col}=NULL`;
+      const displayVal = typeof val === 'string' ? `'${val}'` : val;
+      return `-- expected: ${col}=${displayVal}`;
+    }).join('\n');
+
+    return `-- 断言: ${tableName}\n` +
+           `SELECT ${selectedColsList} FROM "${routedTableName}" WHERE ${whereClause}\n` +
+           `${expectedLines};`;
+  };
+
+  const [toast, setToast] = useState({ show: false, message: '' });
+  const triggerToast = (message) => {
+    setToast({ show: true, message });
+    setTimeout(() => {
+      setToast(prev => prev.message === message ? { show: false, message: '' } : prev);
+    }, 2500);
+  };
+
+  const compiledAssertions = useMemo(() => {
+    const groups = {}; // { [tableName]: { [recordIdx]: [fields...] } }
+    Object.entries(assertionSelections).forEach(([key, isChecked]) => {
+      if (!isChecked) return;
+      const parts = key.split('|');
+      if (parts.length < 3) return;
+      const tableName = parts[0];
+      const recordIdx = parseInt(parts[1], 10);
+      const fieldName = parts.slice(2).join('|');
+      
+      if (!groups[tableName]) {
+        groups[tableName] = {};
+      }
+      if (!groups[tableName][recordIdx]) {
+        groups[tableName][recordIdx] = [];
+      }
+      groups[tableName][recordIdx].push(fieldName);
+    });
+    return groups;
+  }, [assertionSelections]);
+
+  const tableResultsMap = useMemo(() => {
+    const map = {};
+    results.forEach(res => {
+      map[res.table] = res;
+    });
+    return map;
+  }, [results]);
+
+  const handleClearAllAssertions = () => {
+    setAssertionSelections({});
+    triggerToast('已清空所有勾选的断言列');
+  };
+
+  const handleCopyAllAssertions = () => {
+    const allSqlParts = [];
+    Object.entries(compiledAssertions).forEach(([tableName, recordGroups]) => {
+      const result = tableResultsMap[tableName];
+      const details = result?.details;
+      Object.entries(recordGroups).forEach(([recordIdxStr, cols]) => {
+        const recordIdx = parseInt(recordIdxStr, 10);
+        const sql = generatePostgresAssertSql(tableName, details, recordIdx, cols);
+        if (sql) {
+          allSqlParts.push(sql);
+        }
+      });
+    });
+
+    const finalSql = allSqlParts.join('\n\n-- ' + '='.repeat(50) + '\n\n');
+    if (!finalSql) {
+      triggerToast('暂无可选的断言 SQL');
+      return;
+    }
+
+    navigator.clipboard.writeText(finalSql)
+      .then(() => triggerToast('已复制所有断言 SQL 到剪贴板！'))
+      .catch(err => {
+        const el = document.createElement('textarea');
+        el.value = finalSql;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+        triggerToast('已复制所有断言 SQL 到剪贴板！');
+      });
+  };
+
+  const handleCopySingleTableAssertion = (tableSql) => {
+    if (!tableSql) return;
+    navigator.clipboard.writeText(tableSql)
+      .then(() => triggerToast('已复制该表断言 SQL 到剪贴板！'))
+      .catch(err => {
+        const el = document.createElement('textarea');
+        el.value = tableSql;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+        triggerToast('已复制该表断言 SQL 到剪贴板！');
+      });
   };
 
   const logIdRef = useRef(0);
@@ -340,7 +751,7 @@ function App() {
     if (authUser) return;
     const t = window.setTimeout(() => {
       fetchCaptcha();
-    }, 0);
+    }, 2000);
     return () => window.clearTimeout(t);
   }, [authUser, authApiBaseUrl, fetchCaptcha]);
 
@@ -406,8 +817,8 @@ function App() {
       setAuthUser(user);
       window.sessionStorage.setItem('authSession', JSON.stringify(user));
       window.sessionStorage.removeItem('mockAuthUser');
-      // 登录成功后立即从系统数据库拉取 API 地址配置
-      fetchApiSettingsFromDb();
+      // 登录成功后立即从远端拉取最新配置
+      await fetchRemoteConfig(base);
     } catch (e) {
       const body = e.response?.data;
       const p = normalizeAuthPayload(body);
@@ -422,8 +833,6 @@ function App() {
   const handleLogout = () => {
     setAuthUser(null);
     setLoginError('');
-    setApiStatus('idle');
-    setApiStatusMsg('就绪');
     window.sessionStorage.removeItem('mockAuthUser');
     window.sessionStorage.removeItem('authSession');
     setShowEnvironmentDropdown(false);
@@ -434,57 +843,135 @@ function App() {
     setShowDefaultTableSettings(false);
   };
 
-  /** 登录后从系统数据库自动拉取 API 地址配置 */
-  const fetchApiSettingsFromDb = async () => {
-    const latestDbConfig = systemDbConfigRef.current;
-    if (!latestDbConfig?.host) {
-      setApiStatus('error');
-      setApiStatusMsg('未配置系统数据源，请先在「数据库配置」中添加系统数据源');
-      return;
-    }
-    setApiStatus('loading');
-    setApiStatusMsg('正在加载 API 地址...');
+  /** 从远端拉取最新的配置文件 */
+  const fetchRemoteConfig = async (base) => {
     try {
-      const sql = 'SELECT tenant_id, gate_address, mac_address FROM tb_ts_request_gate';
-      let rows;
-      if (electronAPI?.querySystemDb) {
-        const result = await electronAPI.querySystemDb({
-          dbConfig: latestDbConfig,
-          sql,
-          values: []
-        });
-        rows = result.rows;
+      addLog('正在从远端拉取最新配置...', 'INFO');
+      const response = await axios.get(`${base}/autotest/config/latest`, {
+        timeout: 10000
+      });
+      const resData = response.data;
+      if (resData && resData.code === 200 && resData.data) {
+        const rawData = resData.data;
+
+        // ── 格式映射与归一化 ──────────────────────────────────────────
+        // 1. apiSettings 映射 (归一化嵌套的 environments 和驼峰/下划线格式)
+        let mappedApi = null;
+        if (rawData.apiSettings) {
+          const rawApi = rawData.apiSettings;
+          const envs = rawApi.environments || {};
+          mappedApi = {
+            route_url: rawApi.route_url || ''
+          };
+          const envList = ['T1', 'T2', 'SITA', 'DEV1', 'TEST', 'DEVS'];
+          for (const env of envList) {
+            mappedApi[env] = {
+              request_url: envs[env]?.request_url || rawApi[env]?.request_url || '',
+              mac_url: envs[env]?.mac_url || rawApi[env]?.mac_url || ''
+            };
+          }
+        }
+
+        // 2. dbSettings 映射与密码解密
+        let mappedDb = null;
+        if (rawData.dbSettings) {
+          mappedDb = {};
+          const envList = ['T1', 'T2', 'SITA', 'DEV1', 'TEST', 'DEVS'];
+          for (const env of envList) {
+            const arr = rawData.dbSettings[env];
+            if (Array.isArray(arr)) {
+              mappedDb[env] = arr.map(ds => ({
+                dus: ds.dus || 'bdus',
+                host: ds.host || '',
+                port: Number(ds.port) || 5432,
+                database: ds.database || '',
+                user: ds.user || '',
+                password: decryptPassword(ds.password || '')
+              }));
+            } else {
+              mappedDb[env] = [];
+            }
+          }
+        }
+
+        // 3. systemDbConfig 映射与密码解密
+        let mappedSysDb = null;
+        if (rawData.systemDbConfig) {
+          const rawSysDb = rawData.systemDbConfig;
+          mappedSysDb = {
+            host: rawSysDb.host || '',
+            port: Number(rawSysDb.port) || 5432,
+            database: rawSysDb.database || '',
+            user: rawSysDb.user || '',
+            password: decryptPassword(rawSysDb.password || '')
+          };
+        }
+
+        // 4. defaultTableSettings 映射 (归一化下划线/驼峰格式及 conditions 键名)
+        let mappedDefaultTab = null;
+        if (rawData.defaultTableSettings && rawData.defaultTableSettings.tables) {
+          const sanitizedTables = {};
+          for (const [tName, tConfig] of Object.entries(rawData.defaultTableSettings.tables)) {
+            if (!tConfig || typeof tConfig !== 'object') continue;
+
+            const rawConds = tConfig.conditions || tConfig.conditionFields || [];
+            const conditionFields = Array.isArray(rawConds) ? rawConds.map(c => ({
+              field: c.field || '',
+              source: c.source || 'request',
+              path: c.path || '',
+              required: Boolean(c.required),
+              customValue: c.customValue !== undefined ? c.customValue : c.custom_value,
+              selectedTable: c.selectedTable !== undefined ? c.selectedTable : c.selected_table
+            })) : [];
+
+            sanitizedTables[tName] = {
+              chineseName: tConfig.chineseName || tConfig.chinese_name || '',
+              primaryKey: tConfig.primaryKey || tConfig.primary_key || '',
+              dus: tConfig.dus || 'bdus',
+              ignoreFields: tConfig.ignoreFields || tConfig.ignore_fields || '',
+              conditionFields: conditionFields
+            };
+          }
+          mappedDefaultTab = { tables: sanitizedTables };
+        }
+
+        // ── 1. 更新 React State ──────────────────────────────────────
+        if (mappedApi) setApiSettings(mappedApi);
+        if (mappedDb) setDbSettings(mappedDb);
+        if (mappedSysDb) setSystemDbConfig(mappedSysDb);
+        if (mappedDefaultTab) setDefaultTableSettings(mappedDefaultTab);
+
+        // 同步更新已打开状态下的配置草稿，防止弹窗不刷新以及保存时覆盖新导入的数据
+        if (mappedDefaultTab && draftDefaultTableSettings) {
+          setDraftDefaultTableSettings(JSON.parse(JSON.stringify(mappedDefaultTab)));
+        }
+
+        // ── 2. 持久化到 Electron App Config ──────────────────────────
+        if (window.electronAPI) {
+          if (mappedApi) window.electronAPI.setConfig('apiSettings', JSON.stringify(mappedApi));
+          if (mappedDb) window.electronAPI.setConfig('dbSettings', JSON.stringify(mappedDb));
+          if (mappedSysDb) window.electronAPI.setConfig('systemDbConfig', JSON.stringify(mappedSysDb));
+          if (mappedDefaultTab) window.electronAPI.setConfig('defaultTableSettings', JSON.stringify(mappedDefaultTab));
+        }
+
+        // ── 3. 将默认表与现有系统表合并后保存到本地 SQLite (或保存表设置) ──────
+        if (electronAPI) {
+          try {
+            const currentSystemTables = systemSettings?.tables || {};
+            const mergedTables = { ...(mappedDefaultTab?.tables || {}), ...currentSystemTables };
+            await electronAPI.saveTableSettings(mergedTables);
+          } catch (err2) {
+            console.warn('[renderer] remote config sqlite sync failed:', err2);
+          }
+        }
+
+        addLog('从远端同步最新配置成功');
       } else {
-        setApiStatus('error');
-        setApiStatusMsg('非 Electron 环境，无法查询数据库');
-        return;
+        addLog(`拉取远端配置失败: ${resData?.msg || '未知错误'}`, 'WARNING');
       }
-
-      if (!rows || rows.length === 0) {
-        setApiStatus('error');
-        setApiStatusMsg('获取 API 地址失败：表中无数据，请检查数据库配置');
-        return;
-      }
-
-      const patch = {};
-      for (const row of rows) {
-        const env = String(row.tenant_id || '').trim();
-        if (!env) continue;
-        patch[env] = {
-          request_url: row.gate_address || '',
-          mac_url: row.mac_address || ''
-        };
-      }
-      const merged = { ...(apiSettingsRef.current || {}), ...patch };
-      setApiSettings(merged);
-      if (window.electronAPI) window.electronAPI.setConfig('apiSettings', JSON.stringify(merged));
-
-      setApiStatus('success');
-      setApiStatusMsg('就绪');
     } catch (err) {
-      console.error('[fetchApiSettingsFromDb] error:', err);
-      setApiStatus('error');
-      setApiStatusMsg(`获取 API 地址失败：${err.message}`);
+      console.error('[fetchRemoteConfig] failed:', err);
+      addLog(`拉取远端配置失败: ${err.message}`, 'WARNING');
     }
   };
 
@@ -1354,13 +1841,11 @@ function App() {
           <input
             type="text"
             placeholder={selectedFields.length === 0 ? "搜索并选择字段名称 (如: cust_no)..." : ""}
-              value={dataModalSearchQuery}
-              onChange={(e) => setDataModalSearchQuery(e.target.value)}
             value={dataModalSearchQuery}
             onChange={(e) => {
-                  setDataModalSearchQuery(e.target.value);
-                  setIsDropdownOpen(true);
-                }}
+              setDataModalSearchQuery(e.target.value);
+              setIsDropdownOpen(true);
+            }}
                 onFocus={() => setIsDropdownOpen(true)}
             style={{ 
                 flex: 1, minWidth: '150px', border: 'none', background: 'transparent',
@@ -1492,90 +1977,267 @@ function App() {
               </div>
             )}
             {isExpanded && (
-            <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
-              <thead>
-                <tr>
-                  <th style={{ padding: '10px 12px', borderBottom: '2px solid var(--border-color)', backgroundColor: 'var(--bg-lighter)', textAlign: 'left', whiteSpace: 'nowrap', color: 'var(--text-secondary)', width: '20%' }}>字段名称</th>
-                  <th style={{ padding: '10px 12px', borderBottom: '2px solid var(--border-color)', backgroundColor: 'var(--bg-lighter)', textAlign: 'left', whiteSpace: 'nowrap', color: 'var(--text-secondary)', width: '40%' }}>执行前数据</th>
-                  <th style={{ padding: '10px 12px', borderBottom: '2px solid var(--border-color)', backgroundColor: 'var(--bg-lighter)', textAlign: 'left', whiteSpace: 'nowrap', color: 'var(--text-secondary)', width: '40%' }}>执行后数据</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tableFieldsToShow.map(field => {
-                  const hasBeforeRecord = beforeData && beforeData[idx] !== undefined;
-                  const bVal = hasBeforeRecord ? beforeData[idx][field] : undefined;
-                  const aVal = afterData[idx] ? afterData[idx][field] : undefined;
-                  const isIgnored = ignoreFieldsSet.has(field.toLowerCase());
-                  const isDiff = !isIgnored && hasBeforeRecord && bVal !== aVal;
-                  const isNewDataOnly = !hasBeforeRecord && aVal !== undefined;
-                  const fmtVal = (v) => v === undefined
-                    ? <span style={{ opacity: 0.35 }}>—</span>
-                    : v === null
-                      ? <span style={{ fontStyle: 'italic', opacity: 0.45 }}>NULL</span>
-                      : String(v);
-                  return (
-                    <tr key={field} style={{
-                      borderBottom: isDiff ? '1px solid rgba(255,80,80,0.3)' : '1px solid var(--border-color)',
-                      backgroundColor: isDiff ? 'rgba(255,50,50,0.14)' : 'transparent',
-                      borderLeft: isDiff ? '4px solid #ff4040' : '4px solid transparent',
-                    }}>
-                      {/* 字段名 */}
-                      <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', fontWeight: isDiff ? 700 : 500, color: isDiff ? '#ff5555' : 'var(--text-secondary)' }}>
-                        {isDiff && (
-                          <span style={{
-                            display: 'inline-block', marginRight: 7,
-                            padding: '1px 6px', borderRadius: 4,
-                            fontSize: 10, fontWeight: 800, lineHeight: 1.6,
-                            backgroundColor: '#ff4040', color: '#fff',
-                            verticalAlign: 'middle',
-                            boxShadow: '0 0 8px rgba(255,64,64,0.55)',
-                          }}>DIFF</span>
-                        )}
-                        {isIgnored && hasBeforeRecord && bVal !== aVal && (
-                          <span style={{
-                            display: 'inline-block', marginRight: 7,
-                            padding: '1px 6px', borderRadius: 4,
-                            fontSize: 10, fontWeight: 700, lineHeight: 1.6,
-                            backgroundColor: 'var(--info-bg)', color: 'var(--info)',
-                            verticalAlign: 'middle', border: '1px solid var(--info)'
-                          }}>IGNORED</span>
-                        )}
-                        {field}
-                      </td>
-                      {/* 接口前值 — 红色删除线 */}
-                      <td style={{
-                        padding: '10px 12px', wordBreak: 'break-all',
-                        fontFamily: isDiff ? 'monospace' : 'inherit',
-                        fontWeight: isDiff ? 600 : 400,
-                        color: isDiff ? '#ff7070' : 'var(--text-secondary)',
-                        textDecoration: isDiff ? 'line-through' : 'none',
-                        opacity: (isIgnored && hasBeforeRecord && bVal !== aVal) ? 0.6 : 1
-                      }}>
-                        {fmtVal(bVal)}
-                      </td>
-                      {/* 接口后值 — 绿色/蓝色加粗 */}
-                      <td style={{
-                        padding: '10px 12px', wordBreak: 'break-all',
-                        fontFamily: isDiff || isNewDataOnly ? 'monospace' : 'inherit',
-                        fontWeight: isDiff || isNewDataOnly ? 700 : 400,
-                        color: isDiff ? '#f5a623' : (isNewDataOnly ? '#4a90e2' : 'var(--text-secondary)'),
-                        opacity: (isIgnored && hasBeforeRecord && bVal !== aVal) ? 0.6 : 1
-                      }}>
-                        {isDiff && <span style={{ marginRight: 5, fontSize: 12, opacity: 0.8 }}>→</span>}
-                        {fmtVal(aVal)}
-                      </td>
+              <div>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', padding: '0 4px' }}>
+                  <button
+                    className="btn-secondary"
+                    style={{
+                      fontSize: '12px',
+                      padding: '5px 12px',
+                      borderRadius: '8px',
+                      background: 'rgba(0, 122, 255, 0.12)',
+                      border: '1px solid rgba(0, 122, 255, 0.25)',
+                      color: 'var(--accent)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      transition: 'all 0.22s ease-in-out',
+                      fontWeight: '600'
+                    }}
+                    onClick={() => {
+                      setAssertionSelections(prev => {
+                        const newSelections = { ...prev };
+                        tableFieldsToShow.forEach(field => {
+                          const hasBeforeRecord = beforeData && beforeData[idx] !== undefined;
+                          const bVal = hasBeforeRecord ? beforeData[idx][field] : undefined;
+                          const aVal = afterData[idx] ? afterData[idx][field] : undefined;
+                          const isIgnored = ignoreFieldsSet.has(field.toLowerCase());
+                          const isDiff = !isIgnored && hasBeforeRecord && bVal !== aVal;
+                          
+                          if (isDiff) {
+                            newSelections[`${tableName}|${idx}|${field}`] = true;
+                          }
+                        });
+                        return newSelections;
+                      });
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(0, 122, 255, 0.24)';
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(0, 122, 255, 0.12)';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                    }}
+                  >
+                    ⚡ 勾选所有 DIFF 变更列
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    style={{
+                      fontSize: '12px',
+                      padding: '5px 12px',
+                      borderRadius: '8px',
+                      background: 'rgba(50, 205, 50, 0.12)',
+                      border: '1px solid rgba(50, 205, 50, 0.25)',
+                      color: '#32cd32',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      transition: 'all 0.22s ease-in-out',
+                      fontWeight: '600'
+                    }}
+                    onClick={() => {
+                      setAssertionSelections(prev => {
+                        const newSelections = { ...prev };
+                        tableFieldsToShow.forEach(field => {
+                          newSelections[`${tableName}|${idx}|${field}`] = true;
+                        });
+                        return newSelections;
+                      });
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(50, 205, 50, 0.24)';
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(50, 205, 50, 0.12)';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                    }}
+                  >
+                    ✅ 勾选当前所有列
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    style={{
+                      fontSize: '12px',
+                      padding: '5px 12px',
+                      borderRadius: '8px',
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      transition: 'all 0.22s ease-in-out',
+                      fontWeight: '500'
+                    }}
+                    onClick={() => {
+                      setAssertionSelections(prev => {
+                        const newSelections = { ...prev };
+                        tableFieldsToShow.forEach(field => {
+                          delete newSelections[`${tableName}|${idx}|${field}`];
+                        });
+                        return newSelections;
+                      });
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                    }}
+                  >
+                    🧹 清空本表勾选
+                  </button>
+                </div>
+
+                <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: '10px 12px', borderBottom: '2px solid var(--border-color)', backgroundColor: 'var(--bg-lighter)', textAlign: 'center', whiteSpace: 'nowrap', color: 'var(--text-secondary)', width: '10%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                          <input
+                            type="checkbox"
+                            title="全选 / 取消全选"
+                            checked={tableFieldsToShow.length > 0 && tableFieldsToShow.every(field => isColumnChecked(tableName, idx, field))}
+                            onChange={(e) => {
+                              const shouldCheck = e.target.checked;
+                              setAssertionSelections(prev => {
+                                const newSelections = { ...prev };
+                                tableFieldsToShow.forEach(field => {
+                                  const key = `${tableName}|${idx}|${field}`;
+                                  if (shouldCheck) {
+                                    newSelections[key] = true;
+                                  } else {
+                                    delete newSelections[key];
+                                  }
+                                });
+                                return newSelections;
+                              });
+                            }}
+                            style={{
+                              cursor: 'pointer',
+                              width: '14px',
+                              height: '14px',
+                              accentColor: '#007aff',
+                              borderRadius: '3px'
+                            }}
+                          />
+                          <span>断言</span>
+                        </div>
+                      </th>
+                      <th style={{ padding: '10px 12px', borderBottom: '2px solid var(--border-color)', backgroundColor: 'var(--bg-lighter)', textAlign: 'left', whiteSpace: 'nowrap', color: 'var(--text-secondary)', width: '20%' }}>字段名称</th>
+                      <th style={{ padding: '10px 12px', borderBottom: '2px solid var(--border-color)', backgroundColor: 'var(--bg-lighter)', textAlign: 'left', whiteSpace: 'nowrap', color: 'var(--text-secondary)', width: '36%' }}>执行前数据</th>
+                      <th style={{ padding: '10px 12px', borderBottom: '2px solid var(--border-color)', backgroundColor: 'var(--bg-lighter)', textAlign: 'left', whiteSpace: 'nowrap', color: 'var(--text-secondary)', width: '36%' }}>执行后数据</th>
                     </tr>
-                  );
-                })}
-                {tableFieldsToShow.length === 0 && (
-                  <tr>
-                    <td colSpan="3" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
-                      未找到匹配的字段
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {tableFieldsToShow.map(field => {
+                      const hasBeforeRecord = beforeData && beforeData[idx] !== undefined;
+                      const bVal = hasBeforeRecord ? beforeData[idx][field] : undefined;
+                      const aVal = afterData[idx] ? afterData[idx][field] : undefined;
+                      const isIgnored = ignoreFieldsSet.has(field.toLowerCase());
+                      const isDiff = !isIgnored && hasBeforeRecord && bVal !== aVal;
+                      const isNewDataOnly = !hasBeforeRecord && aVal !== undefined;
+                      const isChecked = isColumnChecked(tableName, idx, field);
+
+                      const rowStyle = {
+                        borderBottom: isDiff ? '1px solid rgba(255,80,80,0.3)' : '1px solid var(--border-color)',
+                        backgroundColor: isChecked
+                          ? 'rgba(0, 122, 255, 0.08)'
+                          : (isDiff ? 'rgba(255,50,50,0.14)' : 'transparent'),
+                        borderLeft: isChecked
+                          ? '4px solid #007aff'
+                          : (isDiff ? '4px solid #ff4040' : '4px solid transparent'),
+                        transition: 'background-color 0.2s, border-left-color 0.2s'
+                      };
+
+                      const fmtVal = (v) => v === undefined
+                        ? <span style={{ opacity: 0.35 }}>—</span>
+                        : v === null
+                          ? <span style={{ fontStyle: 'italic', opacity: 0.45 }}>NULL</span>
+                          : String(v);
+                      return (
+                        <tr key={field} style={rowStyle}>
+                          {/* 断言勾选框 */}
+                          <td style={{ padding: '10px 12px', textAlign: 'center', verticalAlign: 'middle' }}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleColumnAssertion(tableName, idx, field)}
+                              style={{
+                                cursor: 'pointer',
+                                width: '15px',
+                                height: '15px',
+                                accentColor: '#007aff',
+                                borderRadius: '4px'
+                              }}
+                            />
+                          </td>
+                          {/* 字段名 */}
+                          <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', fontWeight: isDiff ? 700 : 500, color: isChecked ? 'var(--accent)' : (isDiff ? '#ff5555' : 'var(--text-secondary)') }}>
+                            {isDiff && (
+                              <span style={{
+                                display: 'inline-block', marginRight: 7,
+                                padding: '1px 6px', borderRadius: 4,
+                                fontSize: 10, fontWeight: 800, lineHeight: 1.6,
+                                backgroundColor: '#ff4040', color: '#fff',
+                                verticalAlign: 'middle',
+                                boxShadow: '0 0 8px rgba(255,64,64,0.55)',
+                              }}>DIFF</span>
+                            )}
+                            {isIgnored && hasBeforeRecord && bVal !== aVal && (
+                              <span style={{
+                                display: 'inline-block', marginRight: 7,
+                                padding: '1px 6px', borderRadius: 4,
+                                fontSize: 10, fontWeight: 700, lineHeight: 1.6,
+                                backgroundColor: 'var(--info-bg)', color: 'var(--info)',
+                                verticalAlign: 'middle', border: '1px solid var(--info)'
+                              }}>IGNORED</span>
+                            )}
+                            {field}
+                          </td>
+                          {/* 接口前值 — 红色删除线 */}
+                          <td style={{
+                            padding: '10px 12px', wordBreak: 'break-all',
+                            fontFamily: isDiff ? 'monospace' : 'inherit',
+                            fontWeight: isDiff ? 600 : 400,
+                            color: isDiff ? '#ff7070' : 'var(--text-secondary)',
+                            textDecoration: isDiff ? 'line-through' : 'none',
+                            opacity: (isIgnored && hasBeforeRecord && bVal !== aVal) ? 0.6 : 1
+                          }}>
+                            {fmtVal(bVal)}
+                          </td>
+                          {/* 接口后值 — 绿色/蓝色加粗 */}
+                          <td style={{
+                            padding: '10px 12px', wordBreak: 'break-all',
+                            fontFamily: isDiff || isNewDataOnly ? 'monospace' : 'inherit',
+                            fontWeight: isDiff || isNewDataOnly ? 700 : 400,
+                            color: isDiff ? '#f5a623' : (isNewDataOnly ? '#4a90e2' : 'var(--text-secondary)'),
+                            opacity: (isIgnored && hasBeforeRecord && bVal !== aVal) ? 0.6 : 1
+                          }}>
+                            {isDiff && <span style={{ marginRight: 5, fontSize: 12, opacity: 0.8 }}>→</span>}
+                            {fmtVal(aVal)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {tableFieldsToShow.length === 0 && (
+                      <tr>
+                        <td colSpan="4" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
+                          未找到匹配的字段
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         );
@@ -1602,7 +2264,7 @@ function App() {
     return '!';
   };
 
-  const environmentOptions = ['T1', 'T2', 'SITA', 'DEV1', 'TEST', 'DEVS'];
+  const environmentOptions = ENVIRONMENT_OPTIONS;
 
   const handleEnvironmentSelect = (env) => {
     setSelectedEnvironment(env);
@@ -1626,16 +2288,72 @@ function App() {
     setShowDbSettings(true);
   };
 
-  const handleSystemSettingsClick = () => {
+  const handleSystemSettingsClick = async () => {
     setShowSettingsDropdown(false);
-    // 深拷贝当前配置到草稿，弹窗内修改只写草稿
+    if (window.electronAPI) {
+      try {
+        const saved = await window.electronAPI.getConfig('systemSettings');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && parsed.tables && typeof parsed.tables === 'object') {
+            const sanitizedTables = {};
+            for (const [tName, tConfig] of Object.entries(parsed.tables)) {
+              if (tConfig && typeof tConfig === 'object') {
+                sanitizedTables[tName] = {
+                  chineseName: tConfig.chineseName || '',
+                  primaryKey: tConfig.primaryKey || '',
+                  dus: tConfig.dus || 'bdus',
+                  ignoreFields: tConfig.ignoreFields || '',
+                  conditionFields: Array.isArray(tConfig.conditionFields) ? tConfig.conditionFields : []
+                };
+              }
+            }
+            setSystemSettings({ tables: sanitizedTables });
+            setDraftSystemSettings({ tables: sanitizedTables });
+            setShowSystemSettings(true);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('打开系统配置时从数据库同步最新数据失败:', e);
+      }
+    }
+    // 降级：深拷贝当前状态
     setDraftSystemSettings(JSON.parse(JSON.stringify(systemSettings)));
     setShowSystemSettings(true);
   };
 
-  const handleDefaultTableSettingsClick = () => {
+  const handleDefaultTableSettingsClick = async () => {
     setShowSettingsDropdown(false);
-    // 深拷贝当前配置到草稿
+    if (window.electronAPI) {
+      try {
+        const saved = await window.electronAPI.getConfig('defaultTableSettings');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && parsed.tables && typeof parsed.tables === 'object') {
+            const sanitizedTables = {};
+            for (const [tName, tConfig] of Object.entries(parsed.tables)) {
+              if (tConfig && typeof tConfig === 'object') {
+                sanitizedTables[tName] = {
+                  chineseName: tConfig.chineseName || '',
+                  primaryKey: tConfig.primaryKey || '',
+                  dus: tConfig.dus || 'bdus',
+                  ignoreFields: tConfig.ignoreFields || '',
+                  conditionFields: Array.isArray(tConfig.conditionFields) ? tConfig.conditionFields : []
+                };
+              }
+            }
+            setDefaultTableSettings({ tables: sanitizedTables });
+            setDraftDefaultTableSettings({ tables: sanitizedTables });
+            setShowDefaultTableSettings(true);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('打开默认表配置时从数据库同步最新数据失败:', e);
+      }
+    }
+    // 降级：深拷贝当前状态
     setDraftDefaultTableSettings(JSON.parse(JSON.stringify(defaultTableSettings)));
     setShowDefaultTableSettings(true);
   };
@@ -1705,60 +2423,45 @@ function App() {
   // 测试系统级数据库连接
   const handleTestSystemDbConnection = async (e) => {
     e.preventDefault();
-    
+
     const { host, port, database, user, password } = systemDbConfig;
-    
+
     if (!host || !database || !user) {
       alert('错误: 请填写完整的数据库信息');
       return;
     }
 
-    // 设置连接中状态
-    setTestConnectionStatus(prev => ({
-      ...prev,
-      'system': 'connecting'
-    }));
-
+    const key = 'system';
+    setTestConnectionStatus(prev => ({ ...prev, [key]: 'connecting' }));
     addLog(`开始测试系统级数据库连接: ${host}:${port}/${database}`);
-    
+
     try {
-      // 模拟连接测试
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // 设置连接成功状态
-      setTestConnectionStatus(prev => ({
-        ...prev,
-        'system': 'success'
-      }));
-      
+      if (!window.electronAPI?.querySystemDb) {
+        throw new Error('非 Electron 环境，无法测试数据库连接');
+      }
+      await window.electronAPI.querySystemDb({
+        dbConfig: {
+          host, port, database, user,
+          password: decryptPassword(password || '')
+        },
+        sql: 'SELECT 1',
+        values: []
+      });
+
+      setTestConnectionStatus(prev => ({ ...prev, [key]: 'success' }));
       addLog('系统级数据库连接测试成功', 'INFO');
-      
-      // 3秒后重置状态
-      setTimeout(() => {
-        setTestConnectionStatus(prev => {
-          const newStatus = { ...prev };
-          delete newStatus['system'];
-          return newStatus;
-        });
-      }, 3000);
     } catch (error) {
-      // 设置连接失败状态
-      setTestConnectionStatus(prev => ({
-        ...prev,
-        'system': 'error'
-      }));
-      
+      setTestConnectionStatus(prev => ({ ...prev, [key]: 'error' }));
       addLog(`系统级数据库连接测试失败: ${error.message}`, 'ERROR');
-      
-      // 3秒后重置状态
-      setTimeout(() => {
-        setTestConnectionStatus(prev => {
-          const newStatus = { ...prev };
-          delete newStatus['system'];
-          return newStatus;
-        });
-      }, 3000);
     }
+
+    setTimeout(() => {
+      setTestConnectionStatus(prev => {
+        const newStatus = { ...prev };
+        delete newStatus[key];
+        return newStatus;
+      });
+    }, 3000);
   };
 
   const handleSaveApiSettings = () => {
@@ -1823,407 +2526,14 @@ function App() {
     setShowDefaultTableSettings(false);
   };
 
-  // ===== TOML 序列化/反序列化工具 =====
-
-  const ENC_PREFIX = 'ENC:';
-
-  /**
-   * 加密密码字段 → 返回 "ENC:<base64>"
-   * Electron 环境下通过 preload 桥接使用 Node.js crypto（AES-128-CBC + 随机 IV）
-   * 浏览器环境 fallback：简单 base64 混淆
-   */
-  const encryptPassword = (plaintext) => {
-    if (!plaintext) return plaintext;
-    try {
-      if (electronAPI?.encryptText) {
-        return ENC_PREFIX + electronAPI.encryptText(plaintext);
-      }
-      // 浏览器失能 fallback：简单 base64
-      return ENC_PREFIX + btoa(unescape(encodeURIComponent(plaintext)));
-    } catch (e) {
-      console.warn('[encrypt] 失败，使用明文输出:', e.message);
-      return plaintext;
-    }
-  };
-
-  /**
-   * 解密密码字段
-   * - 如果是 "ENC:<base64>" 开头则解密
-   * - 否则返回原值（兼容明文）
-   */
-  const decryptPassword = (value) => {
-    if (!value || !String(value).startsWith(ENC_PREFIX)) return value;
-    const encoded = String(value).slice(ENC_PREFIX.length);
-    try {
-      if (electronAPI?.decryptText) {
-        return electronAPI.decryptText(encoded);
-      }
-      // 浏览器 fallback
-      return decodeURIComponent(escape(atob(encoded)));
-    } catch (e) {
-      console.warn('[decrypt] 失败，返回原字符串:', e.message);
-      return value; // 如果解密失败，原样返回，可能是用户手动输入的明文
-    }
-  };
-
-  /**
-   * 将配置对象序列化为 TOML 字符串（带注释）
-   * 覆盖：systemSettings、apiSettings、dbSettings、systemDbConfig
-   */
-  const serializeToToml = (sysSettings, defaultTabSettings, apiCfg, dbCfg, sysDbCfg) => {
-    const lines = [];
-    const ts = new Date().toISOString();
-
-    lines.push(`# 数据一致性自动化核对工具 — 系统配置导出`);
-    lines.push(`# 导出时间: ${ts}`);
-    lines.push(`# 此文件可直接用文本编辑器修改后导入，请勿改变 TOML 结构层级`);
-    lines.push(`# 密码字段已加密（格式: ENC:<密文>），导入时自动解密；也可手动将密文改为明文密码`);
-    lines.push('');
-
-    // ── 1. API 设置 ──────────────────────────────────────────────
-    lines.push('# ╔══════════════════════════════════════════╗');
-    lines.push('# ║  API 设置（各环境请求地址与 MAC 地址）  ║');
-    lines.push('# ╚══════════════════════════════════════════╝');
-    lines.push('');
-    lines.push('[api]');
-    lines.push(`# 路由查询服务地址（全局，不受环境影响）`);
-    lines.push(`route_url = ${JSON.stringify(apiCfg.route_url || '')}`);
-    lines.push('');
-
-    const envList = ['T1', 'T2', 'SITA', 'DEV1', 'TEST', 'DEVS'];
-    for (const env of envList) {
-      lines.push(`[api.${env}]`);
-      lines.push(`request_url = ${JSON.stringify(apiCfg[env]?.request_url || '')}`);
-      lines.push(`mac_url     = ${JSON.stringify(apiCfg[env]?.mac_url || '')}`);
-      lines.push('');
-    }
-
-    // ── 2. 系统级数据库配置 ──────────────────────────────────────
-    lines.push('# ╔══════════════════════════════════════════╗');
-    lines.push('# ║       系统级数据库连接配置（全局）       ║');
-    lines.push('# ╚══════════════════════════════════════════╝');
-    lines.push('');
-    lines.push('[system_db]');
-    lines.push(`host     = ${JSON.stringify(sysDbCfg.host || '')}`);
-    lines.push(`port     = ${Number(sysDbCfg.port) || 5432}`);
-    lines.push(`database = ${JSON.stringify(sysDbCfg.database || '')}`);
-    lines.push(`user     = ${JSON.stringify(sysDbCfg.user || '')}`);
-    lines.push(`password = ${JSON.stringify(encryptPassword(sysDbCfg.password || ''))}`);
-    lines.push('');
-
-    // ── 3. 环境级数据库配置 ──────────────────────────────────────
-    lines.push('# ╔══════════════════════════════════════════╗');
-    lines.push('# ║      各环境数据库数据源配置              ║');
-    lines.push('# ╚══════════════════════════════════════════╝');
-    lines.push('');
-    for (const env of envList) {
-      const sources = dbCfg[env] || [];
-      if (sources.length === 0) {
-        lines.push(`# [db.${env}] — 暂无数据源`);
-        lines.push('');
-      } else {
-        sources.forEach((ds, i) => {
-          lines.push(`[[db.${env}]]`);
-          lines.push(`# 数据源 ${i + 1}`);
-          lines.push(`dus      = ${JSON.stringify(ds.dus || 'bdus')}`);
-          lines.push(`host     = ${JSON.stringify(ds.host || '')}`);
-          lines.push(`port     = ${Number(ds.port) || 5432}`);
-          lines.push(`database = ${JSON.stringify(ds.database || '')}`);
-          lines.push(`user     = ${JSON.stringify(ds.user || '')}`);
-          lines.push(`password = ${JSON.stringify(encryptPassword(ds.password || ''))}`);
-          lines.push('');
-        });
-      }
-    }
-
-    // ── 4. 系统表配置（查询条件规则）────────────────────────────
-    lines.push('# ╔══════════════════════════════════════════╗');
-    lines.push('# ║     系统表配置（断言查询条件规则）       ║');
-    lines.push('# ╚══════════════════════════════════════════╝');
-    lines.push('# source 可选值: request（请求报文）| response（响应报文）| route（路由结果）| table（其他表）');
-    lines.push('');
-
-    const tables = sysSettings.tables || {};
-    for (const [tableName, cfg] of Object.entries(tables)) {
-      if (!cfg || typeof cfg !== 'object') continue;
-      lines.push(`[tables.${tableName}]`);
-      if (cfg.chineseName) { lines.push(`chinese_name = ${JSON.stringify(cfg.chineseName)}`); }
-      lines.push(`primary_key = ${JSON.stringify(cfg.primaryKey || '')}`);
-      lines.push(`dus         = ${JSON.stringify(cfg.dus || 'bdus')}`);
-      lines.push('');
-      const conds = Array.isArray(cfg.conditionFields) ? cfg.conditionFields : [];
-      conds.forEach((cond, i) => {
-        lines.push(`[[tables.${tableName}.conditions]]`);
-        lines.push(`# 条件 ${i + 1}`);
-        lines.push(`field    = ${JSON.stringify(cond.field || '')}`);
-        lines.push(`source   = ${JSON.stringify(cond.source || 'request')}`);
-        lines.push(`path     = ${JSON.stringify(cond.path || '')}`);
-        lines.push(`required = ${cond.required ? 'true' : 'false'}`);
-        if (cond.customValue !== undefined) {
-          lines.push(`custom_value = ${JSON.stringify(cond.customValue)}`);
-        }
-        if (cond.selectedTable) {
-          lines.push(`selected_table = ${JSON.stringify(cond.selectedTable)}`);
-        }
-        lines.push('');
-      });
-    }
-
-    // ── 5. 默认表配置（未自定义规则时作为兜底）────────────────────────────
-    lines.push('');
-    lines.push('# ╔══════════════════════════════════════════╗');
-    lines.push('# ║   默认表配置（未自定义规则时作为兜底）     ║');
-    lines.push('# ╚══════════════════════════════════════════╝');
-    lines.push('');
-
-    const defaultTables = defaultTabSettings.tables || {};
-    for (const [tableName, cfg] of Object.entries(defaultTables)) {
-      if (!cfg || typeof cfg !== 'object') continue;
-      lines.push(`[default_tables.${tableName}]`);
-      if (cfg.chineseName) { lines.push(`chinese_name = ${JSON.stringify(cfg.chineseName)}`); }
-      lines.push(`primary_key = ${JSON.stringify(cfg.primaryKey || '')}`);
-      lines.push(`dus         = ${JSON.stringify(cfg.dus || 'bdus')}`);
-      lines.push('');
-      const conds = Array.isArray(cfg.conditionFields) ? cfg.conditionFields : [];
-      conds.forEach((cond, i) => {
-        lines.push(`[[default_tables.${tableName}.conditions]]`);
-        lines.push(`# 条件 ${i + 1}`);
-        lines.push(`field    = ${JSON.stringify(cond.field || '')}`);
-        lines.push(`source   = ${JSON.stringify(cond.source || 'request')}`);
-        lines.push(`path     = ${JSON.stringify(cond.path || '')}`);
-        lines.push(`required = ${cond.required ? 'true' : 'false'}`);
-        if (cond.customValue !== undefined) {
-          lines.push(`custom_value = ${JSON.stringify(cond.customValue)}`);
-        }
-        if (cond.selectedTable) {
-          lines.push(`selected_table = ${JSON.stringify(cond.selectedTable)}`);
-        }
-        lines.push('');
-      });
-    }
-
-    return lines.join('\n');
-  };
-
-  /**
-   * 从 TOML 字符串解析配置（手写解析，覆盖本工具导出的结构）
-   * 返回 { apiSettings, dbSettings, systemDbConfig, systemSettings } 或 null（解析失败）
-   */
-  const parseToml = (text) => {
-    try {
-      // 去掉注释行，保留有效内容
-      const lines = text.split('\n').map(l => {
-        const commentIdx = l.indexOf('#');
-        // 只有不在引号内的 # 才算注释（简化处理：行首 # 或空格+#）
-        if (commentIdx === -1) return l;
-        // 检查 # 是否在字符串内
-        let inStr = false;
-        for (let i = 0; i < commentIdx; i++) {
-          if (l[i] === '"') inStr = !inStr;
-        }
-        if (inStr) return l;
-        return l.substring(0, commentIdx);
-      }).map(l => l.trimEnd());
-
-      // 构建简单的 TOML 解析状态机
-      // 支持: [section], [[array_section]], key = value
-      const result = {};
-      let currentPath = []; // e.g. ['api', 'DEV1'] 或 ['db', 'DEV1'] (array)
-      let isArrayTable = false;
-      const arrayCounters = {}; // 记录 [[x.y]] 的当前索引
-
-      const setDeep = (obj, pathParts, value) => {
-        let cur = obj;
-        for (let i = 0; i < pathParts.length - 1; i++) {
-          const k = pathParts[i];
-          if (!(k in cur)) cur[k] = {};
-          // 如果是数组，指向最后一个元素
-          if (Array.isArray(cur[k])) {
-            cur = cur[k][cur[k].length - 1];
-          } else {
-            cur = cur[k];
-          }
-        }
-        const last = pathParts[pathParts.length - 1];
-        cur[last] = value;
-      };
-
-      const getDeep = (obj, pathParts) => {
-        let cur = obj;
-        for (const k of pathParts) {
-          if (cur == null) return undefined;
-          if (Array.isArray(cur)) cur = cur[cur.length - 1];
-          cur = cur[k];
-        }
-        return cur;
-      };
-
-      const parseValue = (raw) => {
-        raw = raw.trim();
-        if (raw === 'true') return true;
-        if (raw === 'false') return false;
-        if (/^-?\d+$/.test(raw)) return parseInt(raw, 10);
-        if (/^-?\d+\.\d+$/.test(raw)) return parseFloat(raw);
-        if ((raw.startsWith('"') && raw.endsWith('"')) ||
-            (raw.startsWith("'") && raw.endsWith("'"))) {
-          return raw.slice(1, -1)
-            .replace(/\\\\/g, '\\')
-            .replace(/\\"/g, '"')
-            .replace(/\\n/g, '\n')
-            .replace(/\\t/g, '\t');
-        }
-        return raw;
-      };
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
-        // [[array.table]]
-        const arrayMatch = trimmed.match(/^\[\[([^\]]+)\]\]$/);
-        if (arrayMatch) {
-          const path = arrayMatch[1].trim().split('.');
-          isArrayTable = true;
-          currentPath = path;
-          // 确保路径上的数组存在
-          let cur = result;
-          for (let i = 0; i < path.length - 1; i++) {
-            const k = path[i];
-            if (!(k in cur)) cur[k] = {};
-            if (Array.isArray(cur[k])) cur = cur[k][cur[k].length - 1];
-            else cur = cur[k];
-          }
-          const last = path[path.length - 1];
-          if (!Array.isArray(cur[last])) cur[last] = [];
-          cur[last].push({});
-          continue;
-        }
-
-        // [section.table]
-        const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/);
-        if (sectionMatch) {
-          const path = sectionMatch[1].trim().split('.');
-          isArrayTable = false;
-          currentPath = path;
-          // 确保路径存在
-          let cur = result;
-          for (const k of path) {
-            if (Array.isArray(cur[k])) { cur = cur[k][cur[k].length - 1]; continue; }
-            if (!(k in cur)) cur[k] = {};
-            cur = cur[k];
-          }
-          continue;
-        }
-
-        // key = value
-        const kvMatch = trimmed.match(/^([\w_-]+)\s*=\s*(.+)$/);
-        if (kvMatch) {
-          const key = kvMatch[1];
-          const value = parseValue(kvMatch[2].trim());
-          // 找到当前 section 并设值
-          let cur = result;
-          for (const k of currentPath) {
-            if (Array.isArray(cur[k])) { cur = cur[k][cur[k].length - 1]; continue; }
-            if (!(k in cur)) cur[k] = {};
-            cur = cur[k];
-          }
-          cur[key] = value;
-        }
-      }
-
-      // ── 映射 TOML 结构 → 应用 state ──────────────────────────
-      const newApiSettings = {
-        route_url: result.api?.route_url || '',
-      };
-      const envList = ['T1', 'T2', 'SITA', 'DEV1', 'TEST', 'DEVS'];
-      for (const env of envList) {
-        newApiSettings[env] = {
-          request_url: result.api?.[env]?.request_url || '',
-          mac_url: result.api?.[env]?.mac_url || ''
-        };
-      }
-
-      const sysDb = result.system_db || {};
-      const newSystemDbConfig = {
-        host: sysDb.host || '',
-        port: Number(sysDb.port) || 5432,
-        database: sysDb.database || '',
-        user: sysDb.user || '',
-        password: decryptPassword(sysDb.password || '')
-      };
-
-      const newDbSettings = {};
-      for (const env of envList) {
-        const arr = result.db?.[env];
-        if (Array.isArray(arr)) {
-          newDbSettings[env] = arr.map(ds => ({
-            dus: ds.dus || 'bdus',
-            host: ds.host || '',
-            port: Number(ds.port) || 5432,
-            database: ds.database || '',
-            user: ds.user || '',
-            password: decryptPassword(ds.password || '')
-          }));
-        } else {
-          newDbSettings[env] = [];
-        }
-      }
-
-      const rawTables = result.tables || {};
-      const newSystemSettings = { tables: {} };
-      for (const [tName, tCfg] of Object.entries(rawTables)) {
-        if (!tCfg || typeof tCfg !== 'object') continue;
-        const conds = Array.isArray(tCfg.conditions) ? tCfg.conditions : [];
-        newSystemSettings.tables[tName] = {
-          chineseName: tCfg.chinese_name || '',
-          primaryKey: tCfg.primary_key || '',
-          dus: tCfg.dus || 'bdus',
-          conditionFields: conds.map(c => ({
-            field: c.field || '',
-            source: c.source || 'request',
-            path: c.path || '',
-            required: Boolean(c.required),
-            ...(c.custom_value !== undefined ? { customValue: c.custom_value } : {}),
-            ...(c.selected_table ? { selectedTable: c.selected_table } : {})
-          }))
-        };
-      }
-
-      const rawDefaultTables = result.default_tables || {};
-      const newDefaultTableSettings = { tables: {} };
-      for (const [tName, tCfg] of Object.entries(rawDefaultTables)) {
-        if (!tCfg || typeof tCfg !== 'object') continue;
-        const conds = Array.isArray(tCfg.conditions) ? tCfg.conditions : [];
-        newDefaultTableSettings.tables[tName] = {
-          chineseName: tCfg.chinese_name || '',
-          primaryKey: tCfg.primary_key || '',
-          dus: tCfg.dus || 'bdus',
-          conditionFields: conds.map(c => ({
-            field: c.field || '',
-            source: c.source || 'request',
-            path: c.path || '',
-            required: Boolean(c.required),
-            ...(c.custom_value !== undefined ? { customValue: c.custom_value } : {}),
-            ...(c.selected_table ? { selectedTable: c.selected_table } : {})
-          }))
-        };
-      }
-
-      return { newApiSettings, newDbSettings, newSystemDbConfig, newSystemSettings, newDefaultTableSettings };
-    } catch (err) {
-      console.error('[parseToml] 解析失败:', err);
-      return null;
-    }
-  };
 
   /** 导出当前全部配置为 TOML 文件 */
-  const handleExportSettings = async (isDefault = false) => {
+  const handleExportSettings = async () => {
     try {
       const tomlContent = serializeToToml(systemSettings, defaultTableSettings, apiSettings, dbSettings, systemDbConfig);
       const now = new Date();
       const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
-      const prefix = isDefault === true ? 'autotest_default_config' : 'autotest_config';
-      const filename = `${prefix}_${stamp}.toml`;
+      const filename = `autotest_config_${stamp}.toml`;
 
       if (electronAPI) {
         // Electron 环境：通过主进程弹出原生保存对话框
@@ -2285,6 +2595,14 @@ function App() {
       setSystemSettings(newSystemSettings);
       if (newDefaultTableSettings) setDefaultTableSettings(newDefaultTableSettings);
 
+      // 同步更新已打开状态下的配置草稿，防止弹窗不刷新以及保存时覆盖新导入的数据
+      if (draftSystemSettings) {
+        setDraftSystemSettings(JSON.parse(JSON.stringify(newSystemSettings)));
+      }
+      if (draftDefaultTableSettings && newDefaultTableSettings) {
+        setDraftDefaultTableSettings(JSON.parse(JSON.stringify(newDefaultTableSettings)));
+      }
+
       // 持久化
       if (window.electronAPI) {
         window.electronAPI.setConfig('apiSettings', JSON.stringify(newApiSettings));
@@ -2314,7 +2632,7 @@ function App() {
 
   const handleTestConnection = async (env, index, e) => {
     e.preventDefault();
-    
+
     const dataSource = dbSettings[env]?.[index];
     if (!dataSource) {
       alert('错误: 数据源不存在');
@@ -2322,62 +2640,43 @@ function App() {
     }
 
     const { host, port, database, user, password } = dataSource;
-    
+
     if (!host || !database || !user) {
       alert('错误: 请填写完整的数据库信息');
       return;
     }
 
-    // 设置连接中状态
-    setTestConnectionStatus(prev => ({
-      ...prev,
-      [`${env}-${index}`]: 'connecting'
-    }));
-
+    const key = `${env}-${index}`;
+    setTestConnectionStatus(prev => ({ ...prev, [key]: 'connecting' }));
     addLog(`开始测试数据库连接: ${host}:${port}/${database}`);
-    
+
     try {
-      // 这里可以使用axios或其他方式测试连接
-      // 由于是前端环境，我们可以模拟连接测试
-      // 实际项目中可能需要通过后端API来测试
-      
-      // 模拟连接测试
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // 设置连接成功状态
-      setTestConnectionStatus(prev => ({
-        ...prev,
-        [`${env}-${index}`]: 'success'
-      }));
-      
+      if (!window.electronAPI?.querySystemDb) {
+        throw new Error('非 Electron 环境，无法测试数据库连接');
+      }
+      await window.electronAPI.querySystemDb({
+        dbConfig: {
+          host, port, database, user,
+          password: decryptPassword(password || '')
+        },
+        sql: 'SELECT 1',
+        values: []
+      });
+
+      setTestConnectionStatus(prev => ({ ...prev, [key]: 'success' }));
       addLog('数据库连接测试成功', 'INFO');
-      
-      // 3秒后重置状态
-      setTimeout(() => {
-        setTestConnectionStatus(prev => {
-          const newStatus = { ...prev };
-          delete newStatus[`${env}-${index}`];
-          return newStatus;
-        });
-      }, 3000);
     } catch (error) {
-      // 设置连接失败状态
-      setTestConnectionStatus(prev => ({
-        ...prev,
-        [`${env}-${index}`]: 'error'
-      }));
-      
+      setTestConnectionStatus(prev => ({ ...prev, [key]: 'error' }));
       addLog(`数据库连接测试失败: ${error.message}`, 'ERROR');
-      
-      // 3秒后重置状态
-      setTimeout(() => {
-        setTestConnectionStatus(prev => {
-          const newStatus = { ...prev };
-          delete newStatus[`${env}-${index}`];
-          return newStatus;
-        });
-      }, 3000);
     }
+
+    setTimeout(() => {
+      setTestConnectionStatus(prev => {
+        const newStatus = { ...prev };
+        delete newStatus[key];
+        return newStatus;
+      });
+    }, 3000);
   };
 
   // 处理点击外部关闭下拉菜单
@@ -2410,76 +2709,7 @@ function App() {
     if (window.electronAPI) window.electronAPI.setConfig('themeMode', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
 
-  // ===== JMX 导入功能 =====
-
-  /**
-   * 解析 JMeter .jmx 文件（XML），提取所有 HTTP 请求的报文
-   * 支持 postBodyRaw=true 的 JSON 请求体
-   */
-  const parseJmxFile = (xmlText) => {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlText, 'text/xml');
-    const parseError = doc.querySelector('parsererror');
-    if (parseError) throw new Error('文件不是有效的 XML/JMX 格式');
-
-    const samplers = Array.from(doc.querySelectorAll('HTTPSamplerProxy'));
-    if (samplers.length === 0) throw new Error('文件中未找到 HTTP 请求样本，请检查 JMX 文件');
-
-    return samplers.map((sampler, idx) => {
-      const getProp = (name, tag = 'stringProp') => {
-        const el = sampler.querySelector(`${tag}[name="${name}"]`);
-        return el ? el.textContent.trim() : '';
-      };
-
-      const testname = sampler.getAttribute('testname') || `请求 ${idx + 1}`;
-      const protocol  = getProp('HTTPSampler.protocol') || 'http';
-      const domain    = getProp('HTTPSampler.domain');
-      const port      = getProp('HTTPSampler.port');
-      const path      = getProp('HTTPSampler.path');
-      const method    = getProp('HTTPSampler.method') || 'POST';
-      const isRawBody = getProp('HTTPSampler.postBodyRaw', 'boolProp') === 'true';
-
-      let body = '';
-      if (isRawBody) {
-        // Raw body 存放在 Arguments.arguments 下的第一个 elementProp 的 Argument.value 中
-        const argValue = sampler.querySelector(
-          'collectionProp[name="Arguments.arguments"] > elementProp > stringProp[name="Argument.value"]'
-        );
-        // 提取后先做基础清洗：去 BOM、统一换行、去首尾空白
-        const raw = argValue ? argValue.textContent : '';
-        body = raw
-          .replace(/^\uFEFF/, '')
-          .replace(/\r\n/g, '\n')
-          .replace(/\r/g, '\n')
-          .trim();
-      } else {
-        // 键对形式的参数，尝试拼成 JSON
-        const params = {};
-        const argItems = sampler.querySelectorAll(
-          'collectionProp[name="Arguments.arguments"] > elementProp'
-        );
-        argItems.forEach(item => {
-          const nameEl  = item.querySelector('stringProp[name="Argument.name"]');
-          const valueEl = item.querySelector('stringProp[name="Argument.value"]');
-          if (nameEl && valueEl && nameEl.textContent.trim()) {
-            params[nameEl.textContent.trim()] = valueEl.textContent.trim();
-          }
-        });
-        if (Object.keys(params).length > 0) {
-          try { body = JSON.stringify(params, null, 2); } catch { body = ''; }
-        }
-      }
-
-      // 拼接 URL
-      let url = '';
-      if (domain) {
-        const portPart = (port && port !== '80' && port !== '443') ? `:${port}` : '';
-        url = `${protocol}://${domain}${portPart}${path}`;
-      }
-
-      return { testname, url, method, body };
-    }).filter(r => r.body); // 过滤掉没有报文的请求
-  };
+  // parseJmxFile 已移至 src/utils/jmxParser.js
 
   /** 文件选择后处理 */
   const handleJmxFileSelect = (e) => {
@@ -2509,49 +2739,7 @@ function App() {
     reader.readAsText(file, 'utf-8');
   };
 
-  /** 选择报文后填充请求区 */
-  /** 清洗并格式化 JMX 提取到的 body 文本 */
-  const cleanJmxBody = (raw) => {
-    if (!raw) return '';
-    let s = String(raw);
-    
-    // 1. 去除 BOM 和统一换行
-    s = s.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    s = s.trim();
-
-    // 2. 尝试容错处理：去除导致 JSON.parse 失败的常见数组/对象末尾逗号
-    const fixedForJson = s.replace(/,\s*([}\]])/g, '$1');
-
-    try {
-      // 3. 优先尝试标准 JSON 格式化（能完美解决同一属性换行的问题）
-      return JSON.stringify(JSON.parse(fixedForJson), null, 2);
-    } catch {
-      // 4. 解析失败（存在 JMeter 变量等）：使用降级的伪 JSON 格式化器
-      const lines = s.split('\n')
-        .map(l => l.trim()) // 强制去除首尾空白（避免隐藏空白符导致空行存留）
-        .filter(l => l !== ''); // 彻底干掉空行
-        
-      let indentLevel = 0;
-      const formatted = [];
-      
-      for (const line of lines) {
-        // 如果这行以关闭括号开头，先减少缩进
-        if (line.match(/^[}\]]/)) {
-          indentLevel = Math.max(0, indentLevel - 1);
-        }
-        
-        formatted.push('  '.repeat(indentLevel) + line);
-        
-        // 计算行内大括号、方括号带来的缩进变化
-        const openCount = (line.match(/[{[]/g) || []).length;
-        const closeCount = (line.match(/[}\]]/g) || []).length;
-        indentLevel += (openCount - closeCount);
-        indentLevel = Math.max(0, indentLevel);
-      }
-      
-      return formatted.join('\n');
-    }
-  };
+  // cleanJmxBody 已移至 src/utils/jmxParser.js
 
   /** 选择报文后填充请求区 */
   const handleJmxRequestSelect = (req) => {
@@ -2586,18 +2774,26 @@ function App() {
         const savedDbSettings = await window.electronAPI.getConfig('dbSettings');
         if (savedDbSettings) {
           try {
-            startTransition(() => {
-              setDbSettings(JSON.parse(savedDbSettings));
-            });
+            const parsed = JSON.parse(savedDbSettings);
+            // 解密本地存储中的密码（兼容旧数据或直接保存的密文）
+            for (const env of Object.keys(parsed)) {
+              if (Array.isArray(parsed[env])) {
+                parsed[env] = parsed[env].map(ds => ({
+                  ...ds,
+                  password: decryptPassword(ds.password || '')
+                }));
+              }
+            }
+            startTransition(() => { setDbSettings(parsed); });
           } catch (e) { console.error('加载数据库设置失败:', e); }
         }
 
         const savedSystemDbConfig = await window.electronAPI.getConfig('systemDbConfig');
         if (savedSystemDbConfig) {
           try {
-            startTransition(() => {
-              setSystemDbConfig(JSON.parse(savedSystemDbConfig));
-            });
+            const parsed = JSON.parse(savedSystemDbConfig);
+            parsed.password = decryptPassword(parsed.password || '');
+            startTransition(() => { setSystemDbConfig(parsed); });
           } catch (e) { console.error('加载系统级数据库配置失败:', e); }
         }
 
@@ -2612,6 +2808,8 @@ function App() {
                   sanitizedTables[tName] = {
                     chineseName: tConfig.chineseName || '',
                     primaryKey: tConfig.primaryKey || '',
+                    dus: tConfig.dus || 'bdus',
+                    ignoreFields: tConfig.ignoreFields || '',
                     conditionFields: Array.isArray(tConfig.conditionFields) ? tConfig.conditionFields : []
                   };
                 }
@@ -2634,6 +2832,8 @@ function App() {
                   sanitizedTables[tName] = {
                     chineseName: tConfig.chineseName || '',
                     primaryKey: tConfig.primaryKey || '',
+                    dus: tConfig.dus || 'bdus',
+                    ignoreFields: tConfig.ignoreFields || '',
                     conditionFields: Array.isArray(tConfig.conditionFields) ? tConfig.conditionFields : []
                   };
                 }
@@ -2651,19 +2851,44 @@ function App() {
     loadAllSettings();
   }, []);
 
-  // 保持 ref 与最新 state 同步（供异步函数使用）
-  useEffect(() => { systemDbConfigRef.current = systemDbConfig; }, [systemDbConfig]);
-  useEffect(() => { apiSettingsRef.current = apiSettings; }, [apiSettings]);
-
-  // 应用启动时若已有登录态（sessionStorage 中有 authSession），自动加载 API 地址
+  // 监听 SQLite 数据库配置的外部或全局变更，保持页面配置实时刷新
   useEffect(() => {
-    if (authUser && apiStatus === 'idle') {
-      // 延迟一帧，确保 systemDbConfigRef 已同步
-      const t = setTimeout(() => { fetchApiSettingsFromDb(); }, 200);
-      return () => clearTimeout(t);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authUser]);
+    if (!window.electronAPI || !window.electronAPI.onConfigChanged) return;
+    const unsubscribe = window.electronAPI.onConfigChanged(({ key, value }) => {
+      try {
+        // 纯字符串类型的配置项，直接使用不需 JSON.parse
+        if (key === 'authApiBaseUrl') {
+          setAuthApiBaseUrl(value);
+          return;
+        }
+        if (key === 'themeMode') {
+          setIsDarkMode(value === 'dark');
+          return;
+        }
+        const parsedValue = JSON.parse(value);
+        if (key === 'apiSettings') {
+          setApiSettings(parsedValue);
+        } else if (key === 'dbSettings') {
+          setDbSettings(parsedValue);
+        } else if (key === 'systemDbConfig') {
+          setSystemDbConfig(parsedValue);
+        } else if (key === 'systemSettings') {
+          setSystemSettings(parsedValue);
+          if (draftSystemSettings) {
+            setDraftSystemSettings(JSON.parse(JSON.stringify(parsedValue)));
+          }
+        } else if (key === 'defaultTableSettings') {
+          setDefaultTableSettings(parsedValue);
+          if (draftDefaultTableSettings) {
+            setDraftDefaultTableSettings(JSON.parse(JSON.stringify(parsedValue)));
+          }
+        }
+      } catch (e) {
+        console.error(`解析推送的配置 [${key}] 失败:`, e);
+      }
+    });
+    return unsubscribe;
+  }, [draftSystemSettings, draftDefaultTableSettings]);
 
   if (!authUser) {
     return (
@@ -2907,6 +3132,17 @@ function App() {
             >
               📨 响应报文
             </button>
+            <button
+              className={`tab ${activeTab === 'assertion' ? 'tab-active' : ''}`}
+              onClick={() => setActiveTab('assertion')}
+            >
+              🔮 统一断言 SQL
+              {Object.values(assertionSelections).filter(Boolean).length > 0 && (
+                <span className="badge" style={{ backgroundColor: '#007aff', color: '#fff' }}>
+                  {Object.values(assertionSelections).filter(Boolean).length}
+                </span>
+              )}
+            </button>
           </div>
 
           {activeTab === 'log' && (
@@ -3003,6 +3239,196 @@ function App() {
                 <div className="empty-state">
                   <div className="empty-icon">📨</div>
                   <div className="empty-text">暂无响应报文</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'assertion' && (
+            <div className="panel">
+              {Object.values(assertionSelections).filter(Boolean).length === 0 ? (
+                <div className="empty-state" style={{ padding: '80px 20px', animation: 'fadeIn 0.3s' }}>
+                  <div className="empty-icon" style={{ fontSize: '64px', marginBottom: '24px', opacity: 0.85, filter: 'drop-shadow(0 0 15px rgba(0, 122, 255, 0.45))' }}>🔮</div>
+                  <div style={{ fontSize: '20px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '12px' }}>
+                    暂无勾选的断言列
+                  </div>
+                  <div style={{ fontSize: '14px', color: 'var(--text-secondary)', maxWidth: '460px', textAlign: 'center', lineHeight: '1.6', marginBottom: '24px' }}>
+                    请在 <span style={{ color: 'var(--accent)', fontWeight: 600 }}>📊 断言结果</span> 选项卡中，点击任意数据表 SQL 块打开数据对比明细，勾选想要断言的字段。
+                  </div>
+                  <button
+                    className="btn-primary"
+                    onClick={() => setActiveTab('result')}
+                    style={{
+                      padding: '10px 24px',
+                      borderRadius: '20px',
+                      fontWeight: 600,
+                      boxShadow: '0 0 20px rgba(0, 122, 255, 0.3)',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    前往 📊 断言结果
+                  </button>
+                </div>
+              ) : (
+                <div className="assertion-container">
+                  {/* 顶部工具栏 */}
+                  <div className="assertion-toolbar">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>已选断言表</span>
+                      <span className="badge" style={{ backgroundColor: 'var(--accent)', color: '#0d1117', fontSize: '12px', padding: '2px 8px', fontWeight: 700 }}>
+                        {Object.keys(compiledAssertions).length} 张表
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                      <button
+                        className="btn-secondary"
+                        onClick={handleClearAllAssertions}
+                        style={{
+                          fontSize: '13px',
+                          padding: '0 16px',
+                          height: '36px',
+                          borderRadius: '8px',
+                          background: 'rgba(255, 255, 255, 0.04)',
+                          border: '1px solid var(--border)',
+                          color: 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          fontWeight: '500',
+                          transition: 'all 0.2s',
+                          width: 'max-content',
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0
+                        }}
+                      >
+                        🧹 清空所有勾选
+                      </button>
+                      <button
+                        className="btn-primary"
+                        onClick={handleCopyAllAssertions}
+                        style={{
+                          fontSize: '13px',
+                          padding: '0 16px',
+                          height: '36px',
+                          borderRadius: '8px',
+                          background: 'linear-gradient(135deg, #007aff, #0056b3)',
+                          border: 'none',
+                          color: '#fff',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          fontWeight: '600',
+                          boxShadow: '0 4px 12px rgba(0, 122, 255, 0.3)',
+                          transition: 'all 0.2s',
+                          width: 'max-content',
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0
+                        }}
+                      >
+                        📋 一键复制所有 SQL
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 滚动卡片列表 */}
+                  <div className="assertion-content">
+                    {Object.entries(compiledAssertions).map(([tableName, recordGroups]) => {
+                      const result = tableResultsMap[tableName];
+                      const details = result?.details;
+                      
+                      // 汇总该表所有的 SQL
+                      const tableSqls = Object.entries(recordGroups).map(([recordIdxStr, cols]) => {
+                        const recordIdx = parseInt(recordIdxStr, 10);
+                        return generatePostgresAssertSql(tableName, details, recordIdx, cols);
+                      }).join('\n\n');
+
+                      return (
+                        <div key={tableName} className="assertion-card">
+                          
+                          {/* 卡片头部 */}
+                          <div className="assertion-card-header">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <span style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                                {tableName}
+                              </span>
+                              {details?.after?.sql && (() => {
+                                const routed = (() => {
+                                  const match = details.after.sql.match(/FROM\s+["`]?([A-Za-z0-9_]+)["`]?/i);
+                                  return match ? match[1] : tableName;
+                                })();
+                                if (routed !== tableName) {
+                                  return (
+                                    <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', backgroundColor: 'rgba(138, 221, 208, 0.12)', color: 'var(--sql)', border: '1px solid rgba(138, 221, 208, 0.25)', fontWeight: 500 }}>
+                                      路由分表: {routed}
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()}
+                            </div>
+                            <button
+                              className="btn-secondary"
+                              onClick={() => handleCopySingleTableAssertion(tableSqls)}
+                              style={{
+                                fontSize: '12px',
+                                padding: '5px 12px',
+                                borderRadius: '6px',
+                                background: 'rgba(0, 122, 255, 0.08)',
+                                border: '1px solid rgba(0, 122, 255, 0.2)',
+                                color: 'var(--accent)',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                fontWeight: '600',
+                                transition: 'all 0.2s'
+                              }}
+                            >
+                              📄 复制此表 SQL
+                            </button>
+                          </div>
+
+                          {/* SQL 预览 */}
+                          <div className="assertion-code-container">
+                            <pre style={{ margin: 0, padding: '16px', fontSize: '13px', fontFamily: 'var(--font-mono)', overflowX: 'auto', backgroundColor: '#090d13', color: '#abb2bf', lineHeight: '1.6' }}>
+                              <code style={{ whiteSpace: 'pre' }}>{tableSqls}</code>
+                            </pre>
+                          </div>
+
+                          {/* 已选字段标签组 */}
+                          <div className="assertion-tag-section">
+                            <div style={{ width: '100%', fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>
+                              已勾选的字段 (点击 × 取消勾选)
+                            </div>
+                            {Object.entries(recordGroups).flatMap(([recordIdxStr, cols]) => {
+                              const recordIdx = parseInt(recordIdxStr, 10);
+                              const groupLabel = Object.keys(recordGroups).length > 1 ? `[组${recordIdx+1}] ` : '';
+                              return cols.map(col => (
+                                <span
+                                  key={`${recordIdx}-${col}`}
+                                  className="assertion-tag"
+                                >
+                                  <span style={{ opacity: 0.65, fontFamily: 'var(--font-mono)', fontSize: '11px' }}>{groupLabel}</span>
+                                  <span style={{ fontWeight: 600 }}>{col}</span>
+                                  <span
+                                    className="assertion-tag-remove"
+                                    onClick={() => toggleColumnAssertion(tableName, recordIdx, col)}
+                                  >
+                                    ×
+                                  </span>
+                                </span>
+                              ));
+                            })}
+                          </div>
+
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
@@ -3385,16 +3811,22 @@ function App() {
                   />
                 </div>
                 <div className="table-configs">
-                  {Object.entries((draftSystemSettings || systemSettings).tables).filter(([tableName, config]) => {
-                    if (!config || typeof config !== 'object') return false;
-                    const query = tableSearchQuery.toLowerCase();
-                    if (!query) return true;
-                    const chineseName = config.chineseName || '';
-                    return tableName.toLowerCase().includes(query) || chineseName.toLowerCase().includes(query);
-                  }).map(([tableName, config]) => (
-                    <div key={tableName} className="table-config-card">
-                      <div className="table-config-header">
-                        <TableNameInput
+                  {(() => {
+                    const allKeys = Object.keys((draftSystemSettings || systemSettings).tables);
+                    return Object.entries((draftSystemSettings || systemSettings).tables).filter(([tableName, config]) => {
+                      if (!config || typeof config !== 'object') return false;
+                      const query = tableSearchQuery.toLowerCase();
+                      if (!query) return true;
+                      const chineseName = config.chineseName || '';
+                      return tableName.toLowerCase().includes(query) || chineseName.toLowerCase().includes(query);
+                    }).map(([tableName, config]) => {
+                      const indexInAll = allKeys.indexOf(tableName);
+                      const isFirst = indexInAll === 0;
+                      const isLast = indexInAll === allKeys.length - 1;
+                      return (
+                        <div key={tableName} className="table-config-card">
+                          <div className="table-config-header">
+                            <TableNameInput
                           initialName={tableName}
                           onNameChange={(oldName, newName) => {
                             setDraftSystemSettings(prev => {
@@ -3411,6 +3843,23 @@ function App() {
                                 }
                                 newSettings.tables = updatedTables;
                               }
+                              return newSettings;
+                            });
+                          }}
+                          defaultTables={defaultTableSettings.tables}
+                          onSelectSuggestion={(oldName, selectedName, selectedConfig) => {
+                            setDraftSystemSettings(prev => {
+                              const newSettings = { ...prev };
+                              const updatedTables = {};
+                              for (const key of Object.keys(newSettings.tables)) {
+                                if (key === oldName) {
+                                  // 将从默认表规则中匹配到的表规则，做深拷贝放在当前添加表的位置
+                                  updatedTables[selectedName] = JSON.parse(JSON.stringify(selectedConfig));
+                                } else {
+                                  updatedTables[key] = newSettings.tables[key];
+                                }
+                              }
+                              newSettings.tables = updatedTables;
                               return newSettings;
                             });
                           }}
@@ -3437,6 +3886,55 @@ function App() {
                           placeholder="中文名"
                           style={{ marginLeft: '10px', flex: 1 }}
                         />
+                        <div style={{ display: 'flex', gap: '6px', marginLeft: '10px', marginRight: '6px' }}>
+                          <button
+                            className="btn-icon"
+                            onClick={() => moveSystemTable(tableName, 'up')}
+                            disabled={isFirst}
+                            style={{ 
+                              opacity: isFirst ? 0.35 : 1, 
+                              cursor: isFirst ? 'not-allowed' : 'pointer',
+                              fontSize: '11px',
+                              width: '26px',
+                              height: '26px',
+                              background: isFirst ? 'rgba(255,255,255,0.03)' : undefined
+                            }}
+                            title="向上移动此表"
+                          >
+                            ▲
+                          </button>
+                          <button
+                            className="btn-icon"
+                            onClick={() => moveSystemTable(tableName, 'down')}
+                            disabled={isLast}
+                            style={{ 
+                              opacity: isLast ? 0.35 : 1, 
+                              cursor: isLast ? 'not-allowed' : 'pointer',
+                              fontSize: '11px',
+                              width: '26px',
+                              height: '26px',
+                              background: isLast ? 'rgba(255,255,255,0.03)' : undefined
+                            }}
+                            title="向下移动此表"
+                          >
+                            ▼
+                          </button>
+                          <button
+                            className="btn-icon"
+                            onClick={() => insertSystemTable(tableName)}
+                            style={{ 
+                              fontSize: '14px',
+                              color: '#32cd32',
+                              width: '26px',
+                              height: '26px',
+                              background: 'rgba(50, 205, 50, 0.08)',
+                              border: '1px solid rgba(50, 205, 50, 0.15)'
+                            }}
+                            title="在此表下方插入新表"
+                          >
+                            ＋
+                          </button>
+                        </div>
                         <button 
                           className="btn-icon btn-danger"
                           onClick={() => {
@@ -3535,11 +4033,18 @@ function App() {
                                     type="text"
                                     value={condition.field || ''}
                                     onChange={(e) => {
-                                      setDraftSystemSettings(prev => {
-                                        const newSettings = { ...prev };
-                                        newSettings.tables[tableName].conditionFields[index].field = e.target.value;
-                                        return newSettings;
-                                      });
+                                      setDraftSystemSettings(prev => ({
+                                        ...prev,
+                                        tables: {
+                                          ...prev.tables,
+                                          [tableName]: {
+                                            ...prev.tables[tableName],
+                                            conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                              i === index ? { ...cond, field: e.target.value } : cond
+                                            )
+                                          }
+                                        }
+                                      }));
                                     }}
                                     className="input"
                                     placeholder="输入字段名"
@@ -3550,11 +4055,18 @@ function App() {
                                   <select
                                     value={condition.source || 'request'}
                                     onChange={(e) => {
-                                      setDraftSystemSettings(prev => {
-                                        const newSettings = { ...prev };
-                                        newSettings.tables[tableName].conditionFields[index].source = e.target.value;
-                                        return newSettings;
-                                      });
+                                      setDraftSystemSettings(prev => ({
+                                        ...prev,
+                                        tables: {
+                                          ...prev.tables,
+                                          [tableName]: {
+                                            ...prev.tables[tableName],
+                                            conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                              i === index ? { ...cond, source: e.target.value } : cond
+                                            )
+                                          }
+                                        }
+                                      }));
                                     }}
                                     className="input"
                                   >
@@ -3574,12 +4086,18 @@ function App() {
                                       <select
                                         value={condition.selectedTable || ''}
                                         onChange={(e) => {
-                                          setDraftSystemSettings(prev => {
-                                            const newSettings = { ...prev };
-                                            newSettings.tables[tableName].conditionFields[index].selectedTable = e.target.value;
-                                            newSettings.tables[tableName].conditionFields[index].path = e.target.value ? `${e.target.value}.` : '';
-                                            return newSettings;
-                                          });
+                                          setDraftSystemSettings(prev => ({
+                                            ...prev,
+                                            tables: {
+                                              ...prev.tables,
+                                              [tableName]: {
+                                                ...prev.tables[tableName],
+                                                conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                                  i === index ? { ...cond, selectedTable: e.target.value, path: e.target.value ? `${e.target.value}.` : '' } : cond
+                                                )
+                                              }
+                                            }
+                                          }));
                                         }}
                                         className="input"
                                       >
@@ -3595,13 +4113,21 @@ function App() {
                                         type="text"
                                         value={condition.path ? condition.path.split('.')[1] || '' : ''}
                                         onChange={(e) => {
-                                          setDraftSystemSettings(prev => {
-                                            const newSettings = { ...prev };
-                                            if (condition.selectedTable) {
-                                              newSettings.tables[tableName].conditionFields[index].path = `${condition.selectedTable}.${e.target.value}`;
+                                          setDraftSystemSettings(prev => ({
+                                            ...prev,
+                                            tables: {
+                                              ...prev.tables,
+                                              [tableName]: {
+                                                ...prev.tables[tableName],
+                                                conditionFields: prev.tables[tableName].conditionFields.map((cond, i) => {
+                                                  if (i === index && cond.selectedTable) {
+                                                    return { ...cond, path: `${cond.selectedTable}.${e.target.value}` };
+                                                  }
+                                                  return cond;
+                                                })
+                                              }
                                             }
-                                            return newSettings;
-                                          });
+                                          }));
                                         }}
                                         className="input"
                                         placeholder="输入字段名"
@@ -3617,11 +4143,18 @@ function App() {
                                       type="text"
                                       value={condition.customValue || ''}
                                       onChange={(e) => {
-                                        setDraftSystemSettings(prev => {
-                                          const newSettings = { ...prev };
-                                          newSettings.tables[tableName].conditionFields[index].customValue = e.target.value;
-                                          return newSettings;
-                                        });
+                                        setDraftSystemSettings(prev => ({
+                                          ...prev,
+                                          tables: {
+                                            ...prev.tables,
+                                            [tableName]: {
+                                              ...prev.tables[tableName],
+                                              conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                                i === index ? { ...cond, customValue: e.target.value } : cond
+                                              )
+                                            }
+                                          }
+                                        }));
                                       }}
                                       className="input"
                                       placeholder="输入固定值"
@@ -3636,11 +4169,18 @@ function App() {
                                       type="text"
                                       value={condition.path || ''}
                                       onChange={(e) => {
-                                        setDraftSystemSettings(prev => {
-                                          const newSettings = { ...prev };
-                                          newSettings.tables[tableName].conditionFields[index].path = e.target.value;
-                                          return newSettings;
-                                        });
+                                        setDraftSystemSettings(prev => ({
+                                          ...prev,
+                                          tables: {
+                                            ...prev.tables,
+                                            [tableName]: {
+                                              ...prev.tables[tableName],
+                                              conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                                i === index ? { ...cond, path: e.target.value } : cond
+                                              )
+                                            }
+                                          }
+                                        }));
                                       }}
                                       className="input"
                                       placeholder="支持JSONPath (如: txBody.list[0].id 或 $.txBody.id)"
@@ -3655,22 +4195,34 @@ function App() {
                                     type="checkbox"
                                     checked={condition.required || false}
                                     onChange={(e) => {
-                                      setDraftSystemSettings(prev => {
-                                        const newSettings = { ...prev };
-                                        newSettings.tables[tableName].conditionFields[index].required = e.target.checked;
-                                        return newSettings;
-                                      });
+                                      setDraftSystemSettings(prev => ({
+                                        ...prev,
+                                        tables: {
+                                          ...prev.tables,
+                                          [tableName]: {
+                                            ...prev.tables[tableName],
+                                            conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                              i === index ? { ...cond, required: e.target.checked } : cond
+                                            )
+                                          }
+                                        }
+                                      }));
                                     }}
                                   />
                                 </div>
                                 <button 
                                   className="btn-icon btn-danger"
                                   onClick={() => {
-                                    setDraftSystemSettings(prev => {
-                                      const newSettings = { ...prev };
-                                      newSettings.tables[tableName].conditionFields = newSettings.tables[tableName].conditionFields.filter((_, i) => i !== index);
-                                      return newSettings;
-                                    });
+                                    setDraftSystemSettings(prev => ({
+                                      ...prev,
+                                      tables: {
+                                        ...prev.tables,
+                                        [tableName]: {
+                                          ...prev.tables[tableName],
+                                          conditionFields: prev.tables[tableName].conditionFields.filter((_, i) => i !== index)
+                                        }
+                                      }
+                                    }));
                                   }}
                                   title="删除条件"
                                 >
@@ -3682,16 +4234,24 @@ function App() {
                           <button 
                             className="btn-icon add-condition-btn"
                             onClick={() => {
-                              setDraftSystemSettings(prev => {
-                                const newSettings = { ...prev };
-                                newSettings.tables[tableName].conditionFields.push({
-                                  field: '',
-                                  source: 'request',
-                                  path: '',
-                                  required: false
-                                });
-                                return newSettings;
-                              });
+                              setDraftSystemSettings(prev => ({
+                                ...prev,
+                                tables: {
+                                  ...prev.tables,
+                                  [tableName]: {
+                                    ...prev.tables[tableName],
+                                    conditionFields: [
+                                      ...prev.tables[tableName].conditionFields,
+                                      {
+                                        field: '',
+                                        source: 'request',
+                                        path: '',
+                                        required: false
+                                      }
+                                    ]
+                                  }
+                                }
+                              }));
                             }}
                             title="添加条件"
                           >
@@ -3700,7 +4260,7 @@ function App() {
                         </div>
                       </div>
                     </div>
-                  ))}
+                  ); }); })()}
                   <button 
                     className="btn-icon add-table-btn"
                     onClick={() => {
@@ -3728,7 +4288,7 @@ function App() {
               <div className="modal-footer-left">
                 <button
                   className="btn-config-io btn-export"
-                  onClick={() => handleExportSettings(false)}
+                  onClick={handleExportSettings}
                   title="导出全部配置为 TOML 文件"
                 >
                   <span className="btn-io-icon">↑</span> 导出配置
@@ -3792,19 +4352,25 @@ function App() {
                   />
                 </div>
                 <div className="table-configs">
-                  {Object.entries((draftDefaultTableSettings || defaultTableSettings).tables).filter(([tableName, config]) => {
-                    if (!config || typeof config !== 'object') return false;
-                    const query = defaultTableSearchQuery.toLowerCase();
-                    if (!query) return true;
-                    const chineseName = config.chineseName || '';
-                    return tableName.toLowerCase().includes(query) || chineseName.toLowerCase().includes(query);
-                  }).map(([tableName, config]) => (
-                    <div key={tableName} className="table-config-card">
-                      <div className="table-config-header">
-                        <TableNameInput
+                  {(() => {
+                    const allKeys = Object.keys((draftDefaultTableSettings || defaultTableSettings).tables);
+                    return Object.entries((draftDefaultTableSettings || defaultTableSettings).tables).filter(([tableName, config]) => {
+                      if (!config || typeof config !== 'object') return false;
+                      const query = defaultTableSearchQuery.toLowerCase();
+                      if (!query) return true;
+                      const chineseName = config.chineseName || '';
+                      return tableName.toLowerCase().includes(query) || chineseName.toLowerCase().includes(query);
+                    }).map(([tableName, config]) => {
+                      const indexInAll = allKeys.indexOf(tableName);
+                      const isFirst = indexInAll === 0;
+                      const isLast = indexInAll === allKeys.length - 1;
+                      return (
+                        <div key={tableName} className="table-config-card">
+                          <div className="table-config-header">
+                            <TableNameInput
                           initialName={tableName}
                           onNameChange={(oldName, newName) => {
-                            setDefaultTableSettings(prev => {
+                            setDraftDefaultTableSettings(prev => {
                               const newSettings = { ...prev };
                               const existing = newSettings.tables[oldName];
                               if (existing) {
@@ -3829,7 +4395,7 @@ function App() {
                           type="text"
                           value={config.chineseName || ''}
                           onChange={(e) => {
-                            setDefaultTableSettings(prev => ({
+                            setDraftDefaultTableSettings(prev => ({
                               ...prev,
                               tables: {
                                 ...prev.tables,
@@ -3844,10 +4410,59 @@ function App() {
                           placeholder="中文名"
                           style={{ marginLeft: '10px', flex: 1 }}
                         />
+                        <div style={{ display: 'flex', gap: '6px', marginLeft: '10px', marginRight: '6px' }}>
+                          <button
+                            className="btn-icon"
+                            onClick={() => moveDefaultTable(tableName, 'up')}
+                            disabled={isFirst}
+                            style={{ 
+                              opacity: isFirst ? 0.35 : 1, 
+                              cursor: isFirst ? 'not-allowed' : 'pointer',
+                              fontSize: '11px',
+                              width: '26px',
+                              height: '26px',
+                              background: isFirst ? 'rgba(255,255,255,0.03)' : undefined
+                            }}
+                            title="向上移动此表"
+                          >
+                            ▲
+                          </button>
+                          <button
+                            className="btn-icon"
+                            onClick={() => moveDefaultTable(tableName, 'down')}
+                            disabled={isLast}
+                            style={{ 
+                              opacity: isLast ? 0.35 : 1, 
+                              cursor: isLast ? 'not-allowed' : 'pointer',
+                              fontSize: '11px',
+                              width: '26px',
+                              height: '26px',
+                              background: isLast ? 'rgba(255,255,255,0.03)' : undefined
+                            }}
+                            title="向下移动此表"
+                          >
+                            ▼
+                          </button>
+                          <button
+                            className="btn-icon"
+                            onClick={() => insertDefaultTable(tableName)}
+                            style={{ 
+                              fontSize: '14px',
+                              color: '#32cd32',
+                              width: '26px',
+                              height: '26px',
+                              background: 'rgba(50, 205, 50, 0.08)',
+                              border: '1px solid rgba(50, 205, 50, 0.15)'
+                            }}
+                            title="在此表下方插入新表"
+                          >
+                            ＋
+                          </button>
+                        </div>
                         <button 
                           className="btn-icon btn-danger"
                           onClick={() => {
-                            setDefaultTableSettings(prev => {
+                            setDraftDefaultTableSettings(prev => {
                               const newSettings = { ...prev };
                               delete newSettings.tables[tableName];
                               return newSettings;
@@ -3867,7 +4482,7 @@ function App() {
                                 type="text"
                                 value={config.primaryKey || ''}
                                 onChange={(e) => {
-                                  setDefaultTableSettings(prev => ({
+                                  setDraftDefaultTableSettings(prev => ({
                                     ...prev,
                                     tables: {
                                       ...prev.tables,
@@ -3887,7 +4502,7 @@ function App() {
                               <select
                                 value={config.dus || 'bdus'}
                                 onChange={(e) => {
-                                  setDefaultTableSettings(prev => ({
+                                  setDraftDefaultTableSettings(prev => ({
                                     ...prev,
                                     tables: {
                                       ...prev.tables,
@@ -3913,7 +4528,7 @@ function App() {
                                 type="text"
                                 value={config.ignoreFields || ''}
                                 onChange={(e) => {
-                                  setDefaultTableSettings(prev => ({
+                                  setDraftDefaultTableSettings(prev => ({
                                     ...prev,
                                     tables: {
                                       ...prev.tables,
@@ -3942,11 +4557,18 @@ function App() {
                                     type="text"
                                     value={condition.field || ''}
                                     onChange={(e) => {
-                                      setDefaultTableSettings(prev => {
-                                        const newSettings = { ...prev };
-                                        newSettings.tables[tableName].conditionFields[index].field = e.target.value;
-                                        return newSettings;
-                                      });
+                                      setDraftDefaultTableSettings(prev => ({
+                                        ...prev,
+                                        tables: {
+                                          ...prev.tables,
+                                          [tableName]: {
+                                            ...prev.tables[tableName],
+                                            conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                              i === index ? { ...cond, field: e.target.value } : cond
+                                            )
+                                          }
+                                        }
+                                      }));
                                     }}
                                     className="input"
                                     placeholder="输入字段名"
@@ -3957,11 +4579,18 @@ function App() {
                                   <select
                                     value={condition.source || 'request'}
                                     onChange={(e) => {
-                                      setDefaultTableSettings(prev => {
-                                        const newSettings = { ...prev };
-                                        newSettings.tables[tableName].conditionFields[index].source = e.target.value;
-                                        return newSettings;
-                                      });
+                                      setDraftDefaultTableSettings(prev => ({
+                                        ...prev,
+                                        tables: {
+                                          ...prev.tables,
+                                          [tableName]: {
+                                            ...prev.tables[tableName],
+                                            conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                              i === index ? { ...cond, source: e.target.value } : cond
+                                            )
+                                          }
+                                        }
+                                      }));
                                     }}
                                     className="input"
                                   >
@@ -3981,17 +4610,23 @@ function App() {
                                       <select
                                         value={condition.selectedTable || ''}
                                         onChange={(e) => {
-                                          setDefaultTableSettings(prev => {
-                                            const newSettings = { ...prev };
-                                            newSettings.tables[tableName].conditionFields[index].selectedTable = e.target.value;
-                                            newSettings.tables[tableName].conditionFields[index].path = e.target.value ? `${e.target.value}.` : '';
-                                            return newSettings;
-                                          });
+                                          setDraftDefaultTableSettings(prev => ({
+                                            ...prev,
+                                            tables: {
+                                              ...prev.tables,
+                                              [tableName]: {
+                                                ...prev.tables[tableName],
+                                                conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                                  i === index ? { ...cond, selectedTable: e.target.value, path: e.target.value ? `${e.target.value}.` : '' } : cond
+                                                )
+                                              }
+                                            }
+                                          }));
                                         }}
                                         className="input"
                                       >
                                         <option value="">请选择表</option>
-                                        {Object.keys(defaultTableSettings.tables).filter(t => t !== tableName).map(t => (
+                                        {Object.keys((draftDefaultTableSettings || defaultTableSettings).tables).filter(t => t !== tableName).map(t => (
                                           <option key={t} value={t}>{t}</option>
                                         ))}
                                       </select>
@@ -4002,13 +4637,21 @@ function App() {
                                         type="text"
                                         value={condition.path ? condition.path.split('.')[1] || '' : ''}
                                         onChange={(e) => {
-                                          setDefaultTableSettings(prev => {
-                                            const newSettings = { ...prev };
-                                            if (condition.selectedTable) {
-                                              newSettings.tables[tableName].conditionFields[index].path = `${condition.selectedTable}.${e.target.value}`;
+                                          setDraftDefaultTableSettings(prev => ({
+                                            ...prev,
+                                            tables: {
+                                              ...prev.tables,
+                                              [tableName]: {
+                                                ...prev.tables[tableName],
+                                                conditionFields: prev.tables[tableName].conditionFields.map((cond, i) => {
+                                                  if (i === index && cond.selectedTable) {
+                                                    return { ...cond, path: `${cond.selectedTable}.${e.target.value}` };
+                                                  }
+                                                  return cond;
+                                                })
+                                              }
                                             }
-                                            return newSettings;
-                                          });
+                                          }));
                                         }}
                                         className="input"
                                         placeholder="输入字段名"
@@ -4024,11 +4667,18 @@ function App() {
                                       type="text"
                                       value={condition.customValue || ''}
                                       onChange={(e) => {
-                                        setDefaultTableSettings(prev => {
-                                          const newSettings = { ...prev };
-                                          newSettings.tables[tableName].conditionFields[index].customValue = e.target.value;
-                                          return newSettings;
-                                        });
+                                        setDraftDefaultTableSettings(prev => ({
+                                          ...prev,
+                                          tables: {
+                                            ...prev.tables,
+                                            [tableName]: {
+                                              ...prev.tables[tableName],
+                                              conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                                i === index ? { ...cond, customValue: e.target.value } : cond
+                                              )
+                                            }
+                                          }
+                                        }));
                                       }}
                                       className="input"
                                       placeholder="输入固定值"
@@ -4043,11 +4693,18 @@ function App() {
                                       type="text"
                                       value={condition.path || ''}
                                       onChange={(e) => {
-                                        setDefaultTableSettings(prev => {
-                                          const newSettings = { ...prev };
-                                          newSettings.tables[tableName].conditionFields[index].path = e.target.value;
-                                          return newSettings;
-                                        });
+                                        setDraftDefaultTableSettings(prev => ({
+                                          ...prev,
+                                          tables: {
+                                            ...prev.tables,
+                                            [tableName]: {
+                                              ...prev.tables[tableName],
+                                              conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                                i === index ? { ...cond, path: e.target.value } : cond
+                                              )
+                                            }
+                                          }
+                                        }));
                                       }}
                                       className="input"
                                       placeholder="支持JSONPath (如: txBody.list[0].id 或 $.txBody.id)"
@@ -4062,22 +4719,34 @@ function App() {
                                     type="checkbox"
                                     checked={condition.required || false}
                                     onChange={(e) => {
-                                      setDefaultTableSettings(prev => {
-                                        const newSettings = { ...prev };
-                                        newSettings.tables[tableName].conditionFields[index].required = e.target.checked;
-                                        return newSettings;
-                                      });
+                                      setDraftDefaultTableSettings(prev => ({
+                                        ...prev,
+                                        tables: {
+                                          ...prev.tables,
+                                          [tableName]: {
+                                            ...prev.tables[tableName],
+                                            conditionFields: prev.tables[tableName].conditionFields.map((cond, i) =>
+                                              i === index ? { ...cond, required: e.target.checked } : cond
+                                            )
+                                          }
+                                        }
+                                      }));
                                     }}
                                   />
                                 </div>
                                 <button 
                                   className="btn-icon btn-danger"
                                   onClick={() => {
-                                    setDefaultTableSettings(prev => {
-                                      const newSettings = { ...prev };
-                                      newSettings.tables[tableName].conditionFields = newSettings.tables[tableName].conditionFields.filter((_, i) => i !== index);
-                                      return newSettings;
-                                    });
+                                    setDraftDefaultTableSettings(prev => ({
+                                      ...prev,
+                                      tables: {
+                                        ...prev.tables,
+                                        [tableName]: {
+                                          ...prev.tables[tableName],
+                                          conditionFields: prev.tables[tableName].conditionFields.filter((_, i) => i !== index)
+                                        }
+                                      }
+                                    }));
                                   }}
                                   title="删除条件"
                                 >
@@ -4089,16 +4758,24 @@ function App() {
                           <button 
                             className="btn-icon add-condition-btn"
                             onClick={() => {
-                              setDefaultTableSettings(prev => {
-                                const newSettings = { ...prev };
-                                newSettings.tables[tableName].conditionFields.push({
-                                  field: '',
-                                  source: 'request',
-                                  path: '',
-                                  required: false
-                                });
-                                return newSettings;
-                              });
+                              setDraftDefaultTableSettings(prev => ({
+                                ...prev,
+                                tables: {
+                                  ...prev.tables,
+                                  [tableName]: {
+                                    ...prev.tables[tableName],
+                                    conditionFields: [
+                                      ...prev.tables[tableName].conditionFields,
+                                      {
+                                        field: '',
+                                        source: 'request',
+                                        path: '',
+                                        required: false
+                                      }
+                                    ]
+                                  }
+                                }
+                              }));
                             }}
                             title="添加条件"
                           >
@@ -4107,12 +4784,12 @@ function App() {
                         </div>
                       </div>
                     </div>
-                  ))}
+                  ); }); })()}
                   <button 
                     className="btn-icon add-table-btn"
                     onClick={() => {
                       const newTableName = `new_table_${Date.now()}`;
-                      setDefaultTableSettings(prev => ({
+                      setDraftDefaultTableSettings(prev => ({
                         ...prev,
                         tables: {
                           ...prev.tables,
@@ -4135,7 +4812,7 @@ function App() {
               <div className="modal-footer-left">
                 <button
                   className="btn-config-io btn-export"
-                  onClick={() => handleExportSettings(true)}
+                  onClick={handleExportSettings}
                   title="导出全部配置为 TOML 文件"
                 >
                   <span className="btn-io-icon">↑</span> 导出配置
@@ -4246,6 +4923,49 @@ function App() {
         </div>
       )}
 
+      {/* 断言 SQL 查看模态框 */}
+      {showAssertSqlModal && (
+        <div className="modal-overlay" onClick={() => setShowAssertSqlModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '800px', maxHeight: '80vh' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '18px' }}>📋</span> 断言 SQL
+              </h3>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  className="btn-secondary"
+                  onClick={() => {
+                    navigator.clipboard.writeText(assertSqlModalContent)
+                      .then(() => triggerToast('SQL 已复制到剪贴板！'))
+                      .catch(() => alert('复制失败，请手动复制'));
+                  }}
+                  style={{
+                    fontSize: '12px', padding: '5px 12px', borderRadius: '6px',
+                    background: 'rgba(0, 122, 255, 0.08)', border: '1px solid rgba(0, 122, 255, 0.2)',
+                    color: 'var(--accent)', cursor: 'pointer', fontWeight: 600
+                  }}
+                >
+                  📋 复制 SQL
+                </button>
+                <button className="btn-close" onClick={() => setShowAssertSqlModal(false)}>×</button>
+              </div>
+            </div>
+            <div className="modal-body" style={{ padding: '20px' }}>
+              <pre style={{
+                margin: 0, padding: '20px', fontSize: '13px',
+                fontFamily: 'var(--font-mono)', overflowX: 'auto',
+                backgroundColor: '#090d13', color: '#abb2bf',
+                lineHeight: '1.7', borderRadius: '8px',
+                border: '1px solid var(--border)',
+                whiteSpace: 'pre', wordBreak: 'normal'
+              }}>
+                <code>{assertSqlModalContent}</code>
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 关于弹窗 */}
       {showAboutModal && (
         <div className="modal-overlay" onClick={() => setShowAboutModal(false)}>
@@ -4258,7 +4978,7 @@ function App() {
               <div className="about-hero">
                 <img className="about-logo" src="/icons/logo.png" alt="logo" />
                 <h2>自动化交易数据断言</h2>
-                <div className="about-version">版本: v1.0.32</div>
+                <div className="about-version">版本: v1.0.33</div>
                 <div className="about-author">By <span>Taylor Zhu</span></div>
               </div>
               <div className="about-desc">
@@ -4300,6 +5020,32 @@ function App() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+      {toast.show && (
+        <div
+          className="floating-toast"
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: 'rgba(0, 122, 255, 0.95)',
+            color: '#ffffff',
+            padding: '10px 20px',
+            borderRadius: '24px',
+            boxShadow: '0 8px 24px rgba(0, 122, 255, 0.35), 0 0 1px rgba(0, 122, 255, 0.5)',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '14px',
+            fontWeight: '600',
+            backdropFilter: 'blur(8px)'
+          }}
+        >
+          <span style={{ fontSize: '16px' }}>✨</span>
+          <span>{toast.message}</span>
         </div>
       )}
     </div>

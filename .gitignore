@@ -34,6 +34,10 @@ lerna-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
+.env.production
+
+# Test coverage
+coverage/
 
 # Cache
 .cache/
