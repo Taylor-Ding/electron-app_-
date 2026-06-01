@@ -851,7 +851,7 @@ function App() {
         timeout: 10000
       });
       const resData = response.data;
-      if (resData && resData.code === 200 && resData.data) {
+      if (resData && Number(resData.code) === 200 && resData.data) {
         const rawData = resData.data;
 
         // ── 格式映射与归一化 ──────────────────────────────────────────
@@ -938,7 +938,10 @@ function App() {
         // ── 1. 更新 React State ──────────────────────────────────────
         if (mappedApi) setApiSettings(mappedApi);
         if (mappedDb) setDbSettings(mappedDb);
-        if (mappedSysDb) setSystemDbConfig(mappedSysDb);
+        if (mappedSysDb) {
+          setSystemDbConfig(mappedSysDb);
+          systemDbConfigRef.current = mappedSysDb;
+        }
         if (mappedDefaultTab) setDefaultTableSettings(mappedDefaultTab);
 
         // 同步更新已打开状态下的配置草稿，防止弹窗不刷新以及保存时覆盖新导入的数据
@@ -948,10 +951,10 @@ function App() {
 
         // ── 2. 持久化到 Electron App Config ──────────────────────────
         if (window.electronAPI) {
-          if (mappedApi) window.electronAPI.setConfig('apiSettings', JSON.stringify(mappedApi));
-          if (mappedDb) window.electronAPI.setConfig('dbSettings', JSON.stringify(mappedDb));
-          if (mappedSysDb) window.electronAPI.setConfig('systemDbConfig', JSON.stringify(mappedSysDb));
-          if (mappedDefaultTab) window.electronAPI.setConfig('defaultTableSettings', JSON.stringify(mappedDefaultTab));
+          if (mappedApi) await window.electronAPI.setConfig('apiSettings', JSON.stringify(mappedApi));
+          if (mappedDb) await window.electronAPI.setConfig('dbSettings', JSON.stringify(mappedDb));
+          if (mappedSysDb) await window.electronAPI.setConfig('systemDbConfig', JSON.stringify(mappedSysDb));
+          if (mappedDefaultTab) await window.electronAPI.setConfig('defaultTableSettings', JSON.stringify(mappedDefaultTab));
         }
 
         // ── 3. 将默认表与现有系统表合并后保存到本地 SQLite (或保存表设置) ──────
@@ -4978,7 +4981,7 @@ function App() {
               <div className="about-hero">
                 <img className="about-logo" src="/icons/logo.png" alt="logo" />
                 <h2>自动化交易数据断言</h2>
-                <div className="about-version">版本: v1.0.33</div>
+                <div className="about-version">版本: v1.0.34</div>
                 <div className="about-author">By <span>Taylor Zhu</span></div>
               </div>
               <div className="about-desc">
